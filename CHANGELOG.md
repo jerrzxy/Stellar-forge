@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 
+## Chart v2.21.0 (2026-10-03) [minor]
+
+• Merge pull request #431 from Okorie2000-code/feat/p2p-gossip-firewall-issue-221
+✨ feat(security): P2P Gossip Network Threat Detection Firewall
+• Merge pull request #432 from mathstickz/feat/Cleanup-Recovery
+✨ feat: implement Cleanup Recovery
+• Merge pull request #433 from Kami-no-san/docs/issue-233-split-brain-recovery
+📝 docs: add split-brain & divergent-ledger recovery runbook
+📝 docs: add split-brain & divergent-ledger recovery runbook
+• Adds an operations runbook for the case disaster-recovery.md explicitly
+• does not cover: a node (or quorum slice) that keeps closing ledgers on a
+• history that disagrees with the rest of the network after a partition or
+• quorum misconfiguration.
+• Contents:
+• - Step 0 diagnosis: distinguishing a genuine split brain (synced but
+•   divergent ledger numbers, ledgers closing without quorum agreement)
+•   from harmless catchup lag, using stellar-core http-command info/quorum,
+•   log signatures, and the operator's quorumFragility status field.
+• - Two recovery paths, with the destructive/last-resort distinction the
+•   issue asks for: Path A (new-db + catchup from a verified checkpoint;
+•   the common case, no force flag) vs Path B (stellar-core force-scp,
+•   documented per upstream as a one-shot DB flag that does not relax
+•   quorum, run on one designated node after slice-wide agreement, and
+•   reset afterwards).
+• - Quorum-set hardening guidance (threshold sizing, intersection vs
+•   transitive nesting, external validators, stale members after DR
+•   drills) with offline validation via infer-quorum/check-quorum, plus
+•   post-recovery archive-poisoning checks.
+• - examples/troubleshooting/force-scp.sh: a guarded companion script that
+•   enforces the runbook's gates (divergence plausibility check, pods
+•   outside the namespace refused as a double-sign hazard, maintenanceMode
+•   freeze, explicit YES confirmations) before any destructive command.
+• The runbook is cross-linked from and cross-links to
+• disaster-recovery.md and is added to the mkdocs nav under
+• Operations & Observability.
+• Closes #233
+• Signed-off-by: Kami.codes <divineugowisdom@gmail.com>
+• (cherry picked from commit f23f05970678ef603b86719a2efa137e420f8577)
+✨ feat: implement Cleanup Recovery
+✨ feat(security): implement P2P gossip network threat detection firewall
+• Implements the p2p-firewall crate (security/p2p-firewall) that monitors
+• Stellar SCP gossip traffic on port 11625 and dynamically isolates malicious
+• peers within the 2-second SLA required by the issue.
+• ## What was implemented
+• ### security/p2p-firewall/src/analyzer.rs
+• - XDR packet structural validation (minimum size, record-mark length field,
+•   message-type discriminant range [0..19])
+• - Per-IP sliding-window flood detection (configurable PPS threshold)
+• - Per-IP rapid handshake-failure detection (configurable failure threshold)
+• - All checks complete in O(1) time with no heap allocations on the hot path
+• - Designed for sub-millisecond latency to avoid disrupting valid SCP consensus
+• ### security/p2p-firewall/src/interceptor.rs
+• - Two-tier architecture: simulation mode (always compiled, zero privileges)
+•   and eBPF shim (behind ebpf-runtime feature flag)
+• - Simulation mode generates realistic traffic: 80% valid SCP, 10% handshake
+•   failures, 5% malformed, 5% flood bursts for thorough heuristic exercising
+• - Public API: tokio::sync::mpsc::Receiver<RawPacket>
+• ### security/p2p-firewall/src/ban_manager.rs
+• - In-memory HashMap<IpAddr, BanEntry> with configurable TTL (default 5 min)
+• - Auto-expiry sweeper runs every 30 seconds
+• - Optional iptables DROP rule enforcement: iptables -I INPUT -s <ip> --dport 11625 -j DROP
+• - Optional Kubernetes NetworkPolicy annotation update
+• - Enforcement is fire-and-forget (async) to keep detection-to-ban latency < 200 ms
+• - Max-bans cap (default 10,000) prevents memory exhaustion under distributed flood
+• ### security/p2p-firewall/src/metrics.rs
+• - Prometheus metrics: packets_inspected, threats_detected (per-kind), bans_active,
+•   bans_expired, analysis_latency_ns
+• - Axum HTTP server on :9437 serving GET /metrics and GET /health
+• ### security/p2p-firewall/src/lib.rs
+• - FirewallConfig with sensible defaults
+• - start() async entry point wiring all components together
+• - FirewallHandle for graceful shutdown
+• ### security/p2p-firewall/tests/integration_tests.rs
+• - 20 tests covering: unit heuristics, ban lifecycle, flood simulation,
+•   legitimate-peer non-disruption, malformed detection latency, full pipeline
+• - test_flood_simulation_bans_rogue_ip: injects 10,000 packets from a rogue IP,
+•   verifies ban triggers within 2-second SLA (~0.2 ms actual)
+• - test_legitimate_peers_not_banned: 500 packets × 20 peers, zero false positives
+• - test_malformed_detection_latency: verifies < 1 ms per packet across 1,000 samples
+• ### docs/security/p2p-firewall.md
+• - Architecture diagram, heuristic descriptions, metrics reference,
+•   Kubernetes deployment example, load-test results, configuration table
+• ### Cargo.toml
+• - Added security/p2p-firewall to workspace members
+• ## Validation
+• Load-test results from test_flood_simulation_bans_rogue_ip:
+•   ban triggered after ~14 packets, elapsed ≈ 0.18 ms
+•   PASS: ban within 2000 ms SLA (0.18 ms << 2000 ms)
+• Closes #221
+
+
 ## Chart v2.20.0 (2026-10-03) [minor]
 
 • Merge pull request #434 from Kami-no-san/feat/issue-223-rpc-simulation-cache
