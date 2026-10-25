@@ -26,6 +26,7 @@ pub enum Error {
     InsufficientRewardReserve = 9,
     CalculationOverflow = 10,
     ZeroTotalStaked = 11,
+    RewardRateTooLow = 12,
 }
 
 #[contracttype]
@@ -38,12 +39,14 @@ pub enum DataKey {
     PeriodFinish,
     LastUpdateTime,
     RewardPerTokenStored,
+    RewardPerTokenRemainder,
     TotalStaked,
     TotalRewardsReserved,
     IsPaused,
     UserStake(Address),
     UserRewardPerTokenPaid(Address),
     UserRewardsEarned(Address),
+    UserRewardRemainder(Address),
 }
 
 #[contract]
@@ -69,6 +72,7 @@ impl StakingVaultContract {
         env.storage().instance().set(&DataKey::PeriodFinish, &0u64);
         env.storage().instance().set(&DataKey::LastUpdateTime, &0u64);
         env.storage().instance().set(&DataKey::RewardPerTokenStored, &0u128);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &0u128);
         env.storage().instance().set(&DataKey::TotalStaked, &0i128);
         env.storage().instance().set(&DataKey::TotalRewardsReserved, &0i128);
         env.storage().instance().set(&DataKey::IsPaused, &false);
@@ -92,7 +96,7 @@ impl StakingVaultContract {
         let reward_rate: u128 = env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0);
         let (new_rate, new_finish) = reward::compute_new_reward_rate(
             current_time, period_finish, reward_rate, amount, duration,
-        );
+        )?;
 
         let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).ok_or(Error::NotInitialized)?;
         TokenClient::new(&env, &reward_token).transfer(&caller, &env.current_contract_address(), &amount);
@@ -123,6 +127,7 @@ impl StakingVaultContract {
         let user: i128 = env.storage().instance().get(&DataKey::UserStake(staker.clone())).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalStaked, &total.checked_add(amount).ok_or(Error::CalculationOverflow)?);
         env.storage().instance().set(&DataKey::UserStake(staker.clone()), &user.checked_add(amount).ok_or(Error::CalculationOverflow)?);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &0u128);
         env.events().publish((Symbol::new(&env, "staked"), staker.clone()), amount);
         Ok(())
     }
@@ -138,6 +143,7 @@ impl StakingVaultContract {
         let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalStaked, &total.checked_sub(amount).ok_or(Error::CalculationOverflow)?);
         env.storage().instance().set(&DataKey::UserStake(staker.clone()), &user.checked_sub(amount).ok_or(Error::CalculationOverflow)?);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &0u128);
 
         let staking_token: Address = env.storage().instance().get(&DataKey::StakingToken).ok_or(Error::NotInitialized)?;
         TokenClient::new(&env, &staking_token).transfer(&env.current_contract_address(), &staker, &amount);
@@ -154,7 +160,10 @@ impl StakingVaultContract {
         if reward_amount <= 0 { return Ok(0); }
 
         let reserved: i128 = env.storage().instance().get(&DataKey::TotalRewardsReserved).unwrap_or(0);
-        env.storage().instance().set(&DataKey::TotalRewardsReserved, &reserved.saturating_sub(reward_amount));
+        env.storage().instance().set(
+            &DataKey::TotalRewardsReserved,
+            &reserved.checked_sub(reward_amount).ok_or(Error::InsufficientRewardReserve)?,
+        );
         env.storage().instance().set(&DataKey::UserRewardsEarned(staker.clone()), &0i128);
 
         let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).ok_or(Error::NotInitialized)?;
@@ -178,13 +187,17 @@ impl StakingVaultContract {
         if reward_amount <= 0 { return Ok(0); }
 
         let reserved: i128 = env.storage().instance().get(&DataKey::TotalRewardsReserved).unwrap_or(0);
-        env.storage().instance().set(&DataKey::TotalRewardsReserved, &reserved.saturating_sub(reward_amount));
+        env.storage().instance().set(
+            &DataKey::TotalRewardsReserved,
+            &reserved.checked_sub(reward_amount).ok_or(Error::InsufficientRewardReserve)?,
+        );
         env.storage().instance().set(&DataKey::UserRewardsEarned(staker.clone()), &0i128);
 
         let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         let user: i128 = env.storage().instance().get(&DataKey::UserStake(staker.clone())).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalStaked, &total.checked_add(reward_amount).ok_or(Error::CalculationOverflow)?);
         env.storage().instance().set(&DataKey::UserStake(staker.clone()), &user.checked_add(reward_amount).ok_or(Error::CalculationOverflow)?);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &0u128);
         env.events().publish((Symbol::new(&env, "compounded"), staker.clone()), reward_amount);
         Ok(reward_amount)
     }
@@ -198,8 +211,15 @@ impl StakingVaultContract {
         if user <= 0 { return Err(Error::InsufficientStake); }
 
         let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
-        env.storage().instance().set(&DataKey::TotalStaked, &total.saturating_sub(user));
+        env.storage().instance().set(&DataKey::TotalStaked, &total.checked_sub(user).ok_or(Error::CalculationOverflow)?);
         env.storage().instance().set(&DataKey::UserStake(staker.clone()), &0i128);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &0u128);
+        let current_time = env.ledger().timestamp();
+        let period_finish: u64 = env.storage().instance().get(&DataKey::PeriodFinish).unwrap_or(0);
+        env.storage().instance().set(
+            &DataKey::LastUpdateTime,
+            &reward::last_time_reward_applicable(current_time, period_finish),
+        );
 
         let staking_token: Address = env.storage().instance().get(&DataKey::StakingToken).ok_or(Error::NotInitialized)?;
         TokenClient::new(&env, &staking_token).transfer(&env.current_contract_address(), &staker, &user);
@@ -217,32 +237,43 @@ impl StakingVaultContract {
 
     // ---- View functions ----
 
-    pub fn earned(env: Env, account: Address) -> i128 {
+    pub fn earned(env: Env, account: Address) -> Result<i128, Error> {
         let current_time = env.ledger().timestamp();
         let period_finish: u64 = env.storage().instance().get(&DataKey::PeriodFinish).unwrap_or(0);
         let last_update: u64 = env.storage().instance().get(&DataKey::LastUpdateTime).unwrap_or(0);
         let reward_rate: u128 = env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0);
         let total_staked: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         let stored_rpt: u128 = env.storage().instance().get(&DataKey::RewardPerTokenStored).unwrap_or(0);
-        let current_rpt = reward::compute_reward_per_token(
-            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt,
-        );
+        let remainder: u128 = env.storage().instance().get(&DataKey::RewardPerTokenRemainder).unwrap_or(0);
+        let (current_rpt, _) = reward::compute_reward_per_token_with_remainder(
+            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt, remainder,
+        )?;
         let user_stake: i128 = env.storage().instance().get(&DataKey::UserStake(account.clone())).unwrap_or(0);
         let user_paid: u128 = env.storage().instance().get(&DataKey::UserRewardPerTokenPaid(account.clone())).unwrap_or(0);
-        let user_stored: i128 = env.storage().instance().get(&DataKey::UserRewardsEarned(account)).unwrap_or(0);
-        reward::compute_earned(user_stake, current_rpt, user_paid, user_stored)
+        let user_stored: i128 = env.storage().instance().get(&DataKey::UserRewardsEarned(account.clone())).unwrap_or(0);
+        let user_remainder: u128 = env.storage().instance().get(&DataKey::UserRewardRemainder(account)).unwrap_or(0);
+        reward::compute_earned_with_remainder(
+            user_stake,
+            current_rpt,
+            user_paid,
+            user_stored,
+            user_remainder,
+        )
+        .map(|(earned, _)| earned)
     }
 
-    pub fn reward_per_token(env: Env) -> u128 {
+    pub fn reward_per_token(env: Env) -> Result<u128, Error> {
         let current_time = env.ledger().timestamp();
         let period_finish: u64 = env.storage().instance().get(&DataKey::PeriodFinish).unwrap_or(0);
         let last_update: u64 = env.storage().instance().get(&DataKey::LastUpdateTime).unwrap_or(0);
         let reward_rate: u128 = env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0);
         let total_staked: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         let stored_rpt: u128 = env.storage().instance().get(&DataKey::RewardPerTokenStored).unwrap_or(0);
-        reward::compute_reward_per_token(
-            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt,
+        let remainder: u128 = env.storage().instance().get(&DataKey::RewardPerTokenRemainder).unwrap_or(0);
+        reward::compute_reward_per_token_with_remainder(
+            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt, remainder,
         )
+        .map(|(reward_per_token, _)| reward_per_token)
     }
 
     pub fn get_total_staked(env: Env) -> i128 {
@@ -292,11 +323,12 @@ impl StakingVaultContract {
         let reward_rate: u128 = env.storage().instance().get(&DataKey::RewardRate).unwrap_or(0);
         let total_staked: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         let stored_rpt: u128 = env.storage().instance().get(&DataKey::RewardPerTokenStored).unwrap_or(0);
-
-        let new_rpt = reward::compute_reward_per_token(
-            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt,
-        );
+        let remainder: u128 = env.storage().instance().get(&DataKey::RewardPerTokenRemainder).unwrap_or(0);
+        let (new_rpt, new_remainder) = reward::compute_reward_per_token_with_remainder(
+            current_time, last_update, period_finish, reward_rate, total_staked, stored_rpt, remainder,
+        )?;
         env.storage().instance().set(&DataKey::RewardPerTokenStored, &new_rpt);
+        env.storage().instance().set(&DataKey::RewardPerTokenRemainder, &new_remainder);
         env.storage().instance().set(
             &DataKey::LastUpdateTime,
             &reward::last_time_reward_applicable(current_time, period_finish),
@@ -306,8 +338,16 @@ impl StakingVaultContract {
             let user_stake: i128 = env.storage().instance().get(&DataKey::UserStake(user.clone())).unwrap_or(0);
             let user_paid: u128 = env.storage().instance().get(&DataKey::UserRewardPerTokenPaid(user.clone())).unwrap_or(0);
             let user_stored: i128 = env.storage().instance().get(&DataKey::UserRewardsEarned(user.clone())).unwrap_or(0);
-            let new_earned = reward::compute_earned(user_stake, new_rpt, user_paid, user_stored);
+            let user_remainder: u128 = env.storage().instance().get(&DataKey::UserRewardRemainder(user.clone())).unwrap_or(0);
+            let (new_earned, new_user_remainder) = reward::compute_earned_with_remainder(
+                user_stake,
+                new_rpt,
+                user_paid,
+                user_stored,
+                user_remainder,
+            )?;
             env.storage().instance().set(&DataKey::UserRewardsEarned(user.clone()), &new_earned);
+            env.storage().instance().set(&DataKey::UserRewardRemainder(user.clone()), &new_user_remainder);
             env.storage().instance().set(&DataKey::UserRewardPerTokenPaid(user.clone()), &new_rpt);
         }
         Ok(())

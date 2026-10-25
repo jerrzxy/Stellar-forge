@@ -180,6 +180,7 @@ Ready-to-use manifests for all supported node types are available in the [exampl
 - [Soroban RPC](examples/soroban-rpc.yaml) - Smart contract execution node with autoscaling.
 - [Disaster Recovery Setup](examples/dr-setup.yaml) - Multi-cluster HA configuration with automated drills.
 - [ArgoCD GitOps deployment guide](docs/gitops/argocd.mdx) - Versioned, declarative Testnet Validator and Soroban RPC golden path.
+- [Capacity Planning & Storage Scaling Guide](docs/operations/capacity-planning.md) - Baseline CPU/Memory/IOPS requirements, storage growth models, and automated volume expansion details.
 
 ---
 
@@ -484,7 +485,7 @@ A dedicated Soroban monitoring dashboard is available at `monitoring/grafana-sor
 
 The operator exports the following Soroban-specific metrics:
 
-```
+```yaml
 # Wasm execution metrics
 soroban_rpc_wasm_execution_duration_microseconds{namespace, name, network, contract_id}
 
@@ -614,6 +615,8 @@ stellar-operator prune-archive \
 
 For comprehensive documentation, see **[docs/archive-pruning.md](docs/archive-pruning.md)**.
 
+For sizing guidance on how much archive storage to provision, see the **[Capacity Planning & Storage Scaling Guide](docs/operations/capacity-planning.md)**.
+
 ### Live State Diff
 
 Debug operator reconciliation issues with the `diff` subcommand that shows differences between desired and actual cluster state:
@@ -673,6 +676,7 @@ Reliability and observability:
 - [YAML / CRD schema validation](docs/yaml-schema-validation.md)
 - [Helm chart testing](docs/helm-chart-testing.md)
 - [OpenTelemetry tracing](docs/observability/tracing.md)
+- [Capacity planning & storage scaling](docs/operations/capacity-planning.md)
 
 ### Reconciler fuzzing
 
@@ -704,3 +708,4 @@ This project is licensed under the [Apache 2.0 License](LICENSE).
 ## 📝 Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes and releases.
+

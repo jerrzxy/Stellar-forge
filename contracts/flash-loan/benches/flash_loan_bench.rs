@@ -1,26 +1,39 @@
-use flash_loan::{
-FlashLoan,
-FlashLoanClient,
+use flash_loan::{FlashLoanPool, FlashLoanPoolClient};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, token, Address, Bytes, Env,
 };
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract,contractimpl,contracttype,token,Address,Bytes,Env};
 use std::time::Instant;
 
-#contracttype]
-enum BenchDataKey { Token }
+#[contracttype]
+enum BenchDataKey {
+    Token,
+    Pool,
+}
 
-#contract]
+#[contract]
 struct BenchReceiver;
 
-#contractimpl]
+#[contractimpl]
 impl BenchReceiver {
-    pub fn init(env: Env, token: Address) {
+    pub fn initialize(env: Env, pool: Address, token: Address) {
+        env.storage().instance().set(&BenchDataKey::Pool, &pool);
         env.storage().instance().set(&BenchDataKey::Token, &token);
     }
-    pub fn receive_flash_loan(env: Env, _context: Bytes, amount: i128, fee: i128) {
+
+    pub fn execute_operation(
+        env: Env,
+        _token: Address,
+        amount: i128,
+        fee: i128,
+        _user_data: Bytes,
+    ) {
         let token: Address = env.storage().instance().get(&BenchDataKey::Token).unwrap();
-        let client = token::Client::new(&env, &token);
-        client.transfer(&env.current_contract_address(), &env.invoker(), &(amount + fee));
+        let pool: Address = env.storage().instance().get(&BenchDataKey::Pool).unwrap();
+        token::Client::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &pool,
+            &(amount + fee),
+        );
     }
 }
 
@@ -29,30 +42,38 @@ fn main() {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract(&admin);
-    let token_client = token::Client::new(&env, &token);
-    token_client.mint(&admin, &1000);
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token = token_id.address();
+    let token_admin = token::StellarAssetClient::new(&env, &token);
 
-    let flash_loan_id = env.register_contract(None, FlashLoan);
-    let flash_loan_client = FlashLoanClient::new(&env, &flash_loan_id);
-    flash_loan_client.initialize(&admin, &token, &100);
-    flash_loan_client.deposit(&1000);
+    let pool_id = env.register(FlashLoanPool, ());
+    let pool = FlashLoanPoolClient::new(&env, &pool_id);
+    pool.initialize(&admin, &30);
 
-    let receiver_id = env.register_contract(None, BenchReceiver);
-    let receiver_client = BenchReceiverClient::new(&env, &receiver_id);
-    receiver_client.init(&token);
+    let liquidity = 1_000_000;
+    token_admin.mint(&admin, &liquidity);
+    pool.deposit(&admin, &token, &liquidity);
 
-    token_client.mint(&receiver_id, &1);
+    let receiver_id = env.register(BenchReceiver, ());
+    let receiver = BenchReceiverClient::new(&env, &receiver_id);
+    receiver.initialize(&pool_id, &token);
 
-    let context = Bytes::new(&env);
-    let amount: i128 = 1000;
+    let amount = 100_000;
+    let fee = pool.quote_fee(&token, &amount);
+    token_admin.mint(&receiver_id, &(amount + fee));
 
-    let gas_before = env.budget().gas();
     let start = Instant::now();
-    flash_loan_client.flash_loan(&receiver_id, &amount, &context);
+    pool.flash_loan(&token, &amount, &receiver_id, &Bytes::new(&env));
     let elapsed = start.elapsed();
-    let gas_after = env.budget().gas();
+    let budget = env.cost_estimate().budget();
 
-    println!"Flash loan executed in {:_? time: {}", elapsed, elapsed.as_secfs64() * 1000.0);
-    println!"Gas used: {}", gas_after - gas_before);
+    println!(
+        "Flash loan execution: {:.3} ms",
+        elapsed.as_secs_f64() * 1_000.0
+    );
+    println!(
+        "Soroban CPU instructions: {}",
+        budget.cpu_instruction_cost()
+    );
+    println!("Soroban memory bytes: {}", budget.memory_bytes_cost());
 }

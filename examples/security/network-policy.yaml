@@ -1,31 +1,227 @@
-# Namespace labels are the trust boundary. Protect them with RBAC/admission
-# policy; do not allow application teams to add stellar.org/network-access.
+# Stellar-K8s NetworkPolicy manifests
+#
+# This file contains all network policies for a production Stellar-K8s deployment.
+# Apply with:
+#   kubectl apply -f examples/security/network-policy.yaml
+#
+# Prerequisites — label your namespaces first:
+#   kubectl label namespace stellar \
+#     stellar.org/node-namespace="true" \
+#     pod-security.kubernetes.io/enforce=restricted
+#   kubectl label namespace stellar-system stellar.org/operator-namespace="true"
+#   kubectl label namespace monitoring stellar.org/role=monitoring
+#   kubectl label namespace ingress-nginx stellar.org/role=ingress
+#
+# Verification:
+#   See docs/security/network-policies.md for the full verification procedure.
+
+# ─── 1. Default deny ─────────────────────────────────────────────────────────
+
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: horizon-soroban-deny-ingress
-  namespace: stellar-mainnet
+  name: default-deny-all
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: baseline
 spec:
-  podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/component
-        operator: In
-        values: ["horizon", "sorobanrpc"]
-  policyTypes: ["Ingress"]
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: horizon-soroban-trusted-ingress
-  namespace: stellar-mainnet
+  name: default-deny-all
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─── 2. DNS egress ───────────────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: baseline
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# ─── 3. Validator isolation ───────────────────────────────────────────────────
+#
+# Port 11625: SCP gossip (P2P) — allow from external peers (Stellar network)
+# Port 11626: Stellar Core admin HTTP — allow only from operator + monitoring
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: validator-allow-p2p
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: validator
 spec:
   podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/component
-        operator: In
-        values: ["horizon", "sorobanrpc"]
-  policyTypes: ["Ingress"]
+    matchLabels:
+      app.kubernetes.io/component: validator
+  policyTypes:
+    - Ingress
+    - Egress
+
   ingress:
+    # P2P gossip — allow from within namespace (other validators in quorum set)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: validator
+      ports:
+        - protocol: TCP
+          port: 11625
+
+    # P2P gossip — allow from external Stellar network peers (internet-facing)
+    - ports:
+        - protocol: TCP
+          port: 11625
+
+    # Admin HTTP — operator reads state for reconciliation
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/operator-namespace: "true"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: stellar-operator
+      ports:
+        - protocol: TCP
+          port: 11626
+
+    # Admin HTTP — Horizon ingestion (same namespace)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: horizon
+      ports:
+        - protocol: TCP
+          port: 11626
+
+    # Metrics scrape from Prometheus
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: monitoring
+      ports:
+        - protocol: TCP
+          port: 11626
+
+  egress:
+    # P2P gossip to external Stellar network
+    - ports:
+        - protocol: TCP
+          port: 11625
+
+    # History archive sync (S3, GCS, Cloudflare R2, etc.)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+
+---
+# ─── 4. Horizon — deny direct ingress then allow trusted ─────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: horizon-deny-direct-ingress
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: horizon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: horizon
+  policyTypes:
+    - Ingress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: horizon-allow-trusted-ingress
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: horizon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: horizon
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Ingress controller (nginx, Traefik, Contour, etc.)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: ingress
+      ports:
+        - protocol: TCP
+          port: 8000
+
+    # Trusted API gateway namespace (remove if not applicable)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -36,13 +232,195 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
+
+    # Prometheus scrape
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+
+  egress:
+    # Stellar Core admin HTTP for ingestion
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: validator
+      ports:
+        - protocol: TCP
+          port: 11626
+
+    # Horizon PostgreSQL database (CloudNativePG or standalone)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: horizon-db
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: horizon-db
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# ─── 5. Soroban RPC — trusted ingress only ───────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: soroban-rpc-allow-trusted-ingress
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: soroban-rpc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sorobanrpc
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: ingress
+      ports:
+        - protocol: TCP
+          port: 8000     # direct to Soroban RPC
+        - protocol: TCP
+          port: 18000    # cache sidecar (enabled when spec.sorobanConfig.cache.enabled=true)
+
+    # Trusted clients
     - from:
         - namespaceSelector:
             matchLabels:
               stellar.org/network-access: trusted
-          podSelector:
-            matchLabels:
-              stellar.org/client: horizon
       ports:
         - protocol: TCP
           port: 8000
+        - protocol: TCP
+          port: 18000
+
+    # Prometheus scrape
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+
+  egress:
+    # Soroban uses captive core — Stellar Core runs on localhost. Only
+    # external history archive access is needed via HTTPS.
+    - ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ─── 6. Operator egress ──────────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stellar-operator-egress
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: operator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-operator
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Prometheus scrape of operator metrics (port 8080)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # Kubernetes API server calls the webhook on 9443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 9443
+
+  egress:
+    # Kubernetes API server
+    - to:
+        - ipBlock:
+            # Replace 10.96.0.1/32 with your cluster's kubernetes service ClusterIP.
+            # Run: kubectl get svc kubernetes -n default -o jsonpath='{.spec.clusterIP}'
+            cidr: 10.96.0.0/12
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+    # Managed workload namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/node-namespace: "true"
+
+    # Vault (uncomment if operator itself uses Vault Agent)
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: vault
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8200
+
+---
+# ─── 7. Monitoring scrape ─────────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: stellar
+  labels:
+    app.kubernetes.io/managed-by: stellar-operator
+    stellar.org/policy-class: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              stellar.org/role: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 11626

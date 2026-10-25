@@ -4,6 +4,11 @@
 
 This tutorial matches the native **`vaultRef`** seed source on `StellarNode` (see [`src/crd/seed_secret.rs`](../src/crd/seed_secret.rs)) and the Vault Agent Injector sidecar pattern.
 
+Alternative: the Stellar-K8s **built-in seed injector** (`vaultInjector.enabled`)
+injects a Vault-Kubernetes-auth init container plus a memory-only tmpfs
+`stellar-core.cfg` directly into pods — see
+[Vault Seed Injection Webhook](security/vault-webhook-injection.md).
+
 ## 1. Install Vault with injector
 
 ```bash

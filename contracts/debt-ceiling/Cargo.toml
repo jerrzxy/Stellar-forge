@@ -1,0 +1,18 @@
+[package]
+name = "stellar-debt-ceiling"
+version = "0.1.0"
+edition = "2021"
+authors = ["Stellar K8s Contributors"]
+description = "Multi-collateral stablecoin debt ceiling controller for Soroban contracts"
+license = "Apache-2.0"
+
+[lib]
+name = "stellar_debt_ceiling"
+path = "src/lib.rs"
+
+[dependencies]
+soroban-sdk = { version = "21.0.0", features = ["alloc"] }
+serde = { version = "1", features = ["derive"], default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { version = "21.0.0", features = ["testutils", "alloc"] }

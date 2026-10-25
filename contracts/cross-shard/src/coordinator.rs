@@ -66,7 +66,7 @@
 //!   they would violate `#![no_std]` and the Stellar Core scheduler's
 //!   single-threaded execution model.
 
-use soroban_sdk::{symbol_short, vec, Address, Env, Symbol, Val, Vec};
+use soroban_sdk::{symbol_short, vec, Address, Env, Symbol, Val, Vec, TryIntoVal};
 
 use crate::errors::CrossShardError;
 use crate::locks;
@@ -82,14 +82,40 @@ pub const MIN_TRANSITIONS: u32 = 2;
 /// prevent abuse.
 pub const MAX_TRANSITIONS: u32 = 16;
 
-/// Symbol used for the `amount_in` argument forwarded to each AMM's function.
-const SYM_AMOUNT_IN: Symbol = symbol_short!("amount_in");
-/// Symbol used for the `min_out` argument forwarded to each AMM's function.
-const SYM_MIN_OUT:   Symbol = symbol_short!("min_out");
-/// Symbol used for the `token_in` argument forwarded to each AMM's function.
-const SYM_TOKEN_IN:  Symbol = symbol_short!("token_in");
-/// Symbol used for the `token_out` argument forwarded to each AMM's function.
-const SYM_TOKEN_OUT: Symbol = symbol_short!("token_out");
+// ── Route verification helper ────────────────────────────────────────────────
+
+/// Verifies that the final leg output of a multi-shard swap meets the caller's aggregate route minimum.
+///
+/// The final output amount is the amount received from the last AMM in the chain.
+/// This represents the final token amount the trader receives after all swaps.
+///
+/// # Arguments
+///
+/// * `amounts_out` — Output amounts from each leg of the swap.
+/// * `min_final_out` — Minimum acceptable final output amount.
+///
+/// # Returns
+///
+/// The final output amount if it meets the minimum, or `SlippageExceeded`.
+///
+/// # Errors
+///
+/// * `TooFewTransitions` — No legs were executed.
+/// * `SlippageExceeded` — Final output is below the minimum.
+pub fn verify_route_minimum_out(
+    amounts_out: &Vec<i128>,
+    min_final_out: i128,
+) -> Result<i128, CrossShardError> {
+    let len = amounts_out.len();
+    if len == 0 {
+        return Err(CrossShardError::TooFewTransitions);
+    }
+    let final_out = amounts_out.get(len - 1).unwrap_or(0);
+    if final_out < min_final_out {
+        return Err(CrossShardError::SlippageExceeded);
+    }
+    Ok(final_out)
+}
 
 // ── Initialisation ────────────────────────────────────────────────────────────
 
@@ -334,15 +360,22 @@ fn execute_leg(
         (swap_id, leg.amount_in),
     );
 
-    // Invoke the AMM.  If the AMM panics, the Soroban runtime propagates the
-    // panic up to `execute_atomic_swap`, which catches it and records the
-    // failure.  We wrap any non-i128 result as a failure.
-    let result: Val = env.invoke_contract(&leg.pool, &leg.function, args);
+    // Invoke the AMM.  Use try_invoke_contract so that if the AMM returns an
+    // error (or panics), we get a HostError back instead of a panic, allowing
+    // the coordinator to record the failure and trigger a coordinated revert.
+    // Use try_invoke_contract to catch AMM errors without panicking.
+    // In soroban-sdk 22.0.0, try_invoke_contract returns:
+    //   Result<Result<T, T::Error>, Result<E, InvokeError>>
+    // We use Val as T (raw return value) and cross-shard's own Error as E.
+    let result: Result<Result<Val, soroban_sdk::ConversionError>, Result<CrossShardError, soroban_sdk::InvokeError>> =
+        env.try_invoke_contract::<Val, CrossShardError>(&leg.pool, &leg.function, args);
 
-    // Attempt to decode the returned value as i128.
-    let amount_out: i128 = result
-        .try_into_val(env)
-        .map_err(|_| CrossShardError::LegInvocationFailed)?;
+    // Extract the inner result.
+    let amount_out: i128 = match result {
+        Ok(Ok(rv)) => rv.try_into_val(env)
+            .map_err(|_| CrossShardError::LegInvocationFailed)?,
+        _ => return Err(CrossShardError::LegInvocationFailed),
+    };
 
     env.events().publish(
         (symbol_short!("leg_ok"), leg.pool.clone()),

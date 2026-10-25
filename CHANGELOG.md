@@ -5,6 +5,325 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 
+## Chart v2.29.0 (2026-10-25) [minor]
+
+• Merge pull request #482 from Devadakene/feat/heaptrack-profiling
+✨ feat(profiling): integrate jemalloc heaptrack profiling endpoints and memory leak alerts
+• Merge pull request #491 from Ukorstack/feat/multi-region-gateway-fallback-83
+✨ feat(gateway): Multi-Region Soroban RPC Router with Failover (#83)
+• Merge pull request #490 from Princeadim/feat/cdp-engine-#217
+✨ feat(contracts): CDP Manager Engine (#217)
+• Merge pull request #513 from odunfemisamuel-maker/main
+• Enhance trace replay UI for Soroban transaction debugging
+• Merge pull request #515 from StephenMero/feat/security-hardening-manual
+✨ feat(security): add security hardening manual with RBAC, secrets, and…
+• Merge pull request #516 from CodeNinjaStephen/feat/royalty-splitter-distribution-engine
+📝 docs(royalty-splitter): add TESTING.md with full test coverage guide
+• Merge pull request #517 from Okorie2000-code/drips/116
+• Add dynamic node topology spread constraint enforcer
+• Merge pull request #518 from mathstickz/feat/Cross-Chain
+✨ feat:implement Cross-Chain NFT (ERC-721 to Soroban) Bridge Vault
+• Merge pull request #519 from Kingsuite/feat/trimming
+• Feat/trimming
+• Merge pull request #520 from Ukorstack/drips/67
+• Add bridge-relayer contract with threshold attestation verification and replay protection
+• Merge pull request #521 from dayor2746-creator/feat/pol-treasury-bonding-curve
+✨ feat(contracts): add POL Treasury Manager with bonding curve, vesting…
+• Merge branch 'main' into drips/116
+• Merge pull request #1 from odunfemisamuel-maker/feat/issue-229-react-window
+✨ feat: Smart Contract Auth Hierarchy Builder (issue #228)
+✨ feat(contracts): add POL Treasury Manager with bonding curve, vesting, and reserve ratio
+• Implements the Protocol Owned Liquidity (POL) Treasury Manager as a
+• standalone Soroban contract workspace under contracts/pol-treasury/.
+• ## Modules
+• ### bond.rs — Bonding Curve
+• - Linear discount decay: discount_bps = MAX_DISCOUNT_BPS - (reserve * MAX_DISCOUNT_BPS / MAX_RESERVE_TARGET)
+• - All arithmetic uses i128 fixed-point BPS math (no floats)
+• - Discount capped at 5 000 BPS (50 %) to prevent unlimited dilution
+• - compute_payout() validated linear in reserve_in via property tests
+• ### vesting.rs — Time-locked Vesting
+• - Per-bonder cliff + linear vesting schedules in persistent storage
+• - cliff_ledgers enforces zero tokens before the cliff
+• - Monotone-non-decreasing claimable amount guaranteed by invariant tests
+• - Accumulates additional bonds onto existing schedules
+• ### reserve.rs — Reserve Ratio Enforcement
+• - Dynamic backing_ratio_bps = reserve_val * 10_000 / supply_val
+• - Pre-bond ratio check rejects bonds that breach min_ratio_bps
+• - ratio = u32::MAX when supply = 0 (no dilution risk)
+• ### lib.rs — PolTreasury Contract
+• - initialize(): sets up all three subsystems atomically
+• - bond(): bonding curve → ratio check → token transfer → vesting schedule
+• - claim(): transfers vested tokens from treasury to beneficiary
+• - Query entry-points: bond_state(), vesting_schedule(), reserve_state()
+• - Events: TreasuryInitialized, Bonded, Claimed (contractevent derive)
+• ## Test Coverage
+• 26 property tests across all four files validating:
+• - Discount monotone-decreasing as reserves grow
+• - Discount = 0 at max_reserve_target (1 000 bond convergence test)
+• - Payout linear in reserve_in
+• - Vesting claimable never decreases over time
+• - Zero claimable before cliff
+• - Full claimable after vesting duration
+• - Reserve ratio 100 % when balanced, 0 when empty
+• - Under-backed bond detection
+• Closes #238
+✨ feat(bridge-relayer): add threshold multi-sig relayer contract with nonce replay protection and dispatcher
+• Closes #67
+✨ feat: Oracles Aggregator with Medianiser & Outlier Trimming
+✨ feat:implement Decentralised Oracles Aggregator with Medianiser & Outlier Trimming
+✨ feat:implement Cross-Chain NFT (ERC-721 to Soroban) Bridge Vault
+✨ feat(controller): add dynamic node topology spread constraint enforcer
+• Closes #116
+📝 docs(royalty-splitter): add TESTING.md with full test coverage guide
+• Documents all 12 tests (5 unit + 7 integration), the dust-free
+• conservation invariant, the 33.333%/33.333%/33.334% specification
+• scenario, the multi-sig reconfiguration gate, and the precision model
+• used by compute_allocation.
+• Closes the distribution engine implementation task.
+✨ feat(security): add security hardening manual with RBAC, secrets, and NetworkPolicies
+• - docs/security/README.md: top-level security index with quick-start
+•   checklist, threat model table, and links to all example manifests
+• - docs/security/secrets-management.md: deployable configurations for
+•   HashiCorp Vault (Agent Injector + ESO), AWS Secrets Manager (IRSA),
+•   and GCP Secret Manager (Workload Identity); includes rotation
+•   procedures, etcd encryption guidance, and audit log verification
+• - docs/security/network-policies.md: full NetworkPolicy reference for
+•   validator P2P isolation, Horizon/Soroban trusted-ingress, operator
+•   egress, monitoring scrape, and automated verification script
+• - examples/security/strict-rbac.yaml: fill previously empty file with
+•   14-document least-privilege profile (SA, Roles, ClusterRoles, PSS
+•   Namespace labels, workload SA); no wildcards, no Secret writes
+• - examples/security/network-policy.yaml: 10 deployable NetworkPolicies
+•   (default-deny x2, DNS egress, validator, Horizon, Soroban RPC,
+•   operator, Prometheus scrape)
+• - examples/security/externalsecret-aws.yaml: complete IRSA-based ESO
+•   SecretStore + ExternalSecret for AWS Secrets Manager
+• - examples/security/externalsecret-vault.yaml: complete Vault Kubernetes
+•   auth ESO SecretStore + ExternalSecret
+• Closes #security-hardening
+✨ feat(gateway): multi-region Soroban RPC router with failover (#83)
+• Implement a production-grade multi-region gateway proxy that routes
+• Soroban JSON-RPC traffic to the best available cluster based on health,
+• ledger alignment, and latency — with automatic failover and circuit
+• breaker isolation.
+• ## Key modules
+• ### gateway/src/health.rs
+• - ClusterHealthMonitor: background per-cluster probe loops via
+•   Soroban RPC getHealth JSON-RPC call
+• - BreakerState_ state machine: Closed → Open → HalfOpen with
+•   configurable failure_threshold / success_threshold / open_window
+• - ClusterHealth enum: Healthy / Degraded / Desynced / Unhealthy
+• - Ledger-sequence alignment: lag > max_lag_ledgers → Desynced
+• - HealthSnapshot: lock-free Arc read on the hot path (<2ms constraint)
+• - DbCorruption probe error: immediately isolates cluster on detection
+• ### gateway/src/router.rs
+• - MultiRegionRouter: routing decisions driven by pre-computed snapshot
+• - Write strategy: primary first; failover to highest-ledger secondary
+•   when primary is desynced or circuit breaker is open
+• - Read strategy: lowest-latency synced cluster (Desynced excluded to
+•   prevent serving stale ledger data)
+• - simulateTransaction classified as read (sandbox, no state commit)
+• - Unknown methods treated as writes for safety
+• - AtomicRouterMetrics: lock-free counters (no mutex on hot path)
+• ### src/bin/soroban-gateway-proxy.rs
+• - Axum HTTP proxy binary: POST / → upstream JSON-RPC forward
+• - GET /healthz, /readyz, /metrics endpoints
+• - Full CLI with env-var overrides (GATEWAY_LISTEN, GATEWAY_CLUSTERS…)
+• - x-routed-cluster / x-route-eval-us observability headers
+• ### Cargo.toml
+• - Added [[bin]] soroban-gateway-proxy (required-features = rest-api)
+• ## tests/gateway_load_test.rs (17 tests)
+• Validates all Definition of Done criteria:
+• - 10k reads all route to lowest-latency cluster
+• - 10k writes all route to healthy primary
+• - 50 concurrent tasks × 200 requests each (no races)
+• - 10-ledger sync delay: primary desynced → instant failover to secondary
+• - Boundary: lag == threshold → still healthy; lag > threshold → failover
+• - Sub-2ms route eval: 1000 requests (5 clusters) and 500 (10 clusters)
+• - Circuit breaker: open breaker blocks both reads and writes
+• - Mixed 10k read/write load; metrics counters exact
+• - Dynamic lifecycle: healthy → desynced → recovered
+• - Stress: 100k requests, 100 concurrent tasks, zero errors
+• - Degraded fallback enabled/disabled behavior
+• - Metrics accuracy across 250+ mixed requests
+• ## Design constraints met
+• - Health evaluation overhead < 2ms: snapshot is an Arc clone, no I/O
+• - 10-ledger lag detection: ClusterHealth::Desynced triggers immediately
+•   on next snapshot rebuild (within one probe_interval)
+• - Circuit breaker: clusters with db corruption or repeated failures
+•   isolated until open_window elapses and half-open trial succeeds
+• Closes #83
+✨ feat(contracts): add CDP Manager Engine (#217)
+• Implements a Collateralized Debt Position engine as a standalone
+• Soroban smart contract (contracts/cdp-engine/).
+• Key modules
+• -----------
+• - src/lib.rs        — vault state, deposit/withdraw collateral,
+•                       borrow/repay with CR enforcement, admin functions
+• - src/liquidate.rs  — keeper liquidation with discount seizure and
+•                       bad-debt isolation into ReserveBadDebt reserve
+• - src/tests.rs      — ~35 tests covering all flows and edge cases
+• Design highlights
+• -----------------
+• * VaultState {collateral, debt} in persistent storage per user address
+• * Minimum CR (bps) enforced on borrow and withdrawal
+• * Liquidation threshold (bps) strictly below min CR
+• * Seizure formula: debt_covered × (10000 + discount_bps) / 10000
+• * Insolvent vaults: all collateral seized, remaining debt moved to
+•   ReserveBadDebt counter, vault zeroed — bad debt isolated
+• * All CR arithmetic via u128 intermediates — no overflow possible
+• * Cross-contract oracle call: oracle.get_price() → i128 (PRICE_PRECISION)
+• * soroban-sdk 27.0.6, Apache-2.0 license
+• Closes #217
+✨ feat(profiling): integrate jemalloc heaptrack profiling endpoints and memory leak alerts
+
+
+## Chart v2.28.0 (2026-10-25) [minor]
+
+• Merge pull request #539 from odunfemisamuel-maker/feat/vault-secret-injector
+✨ feat(webhook): add Vault secret injector for validator seeds via tmpfs (#224)
+• Merge branch 'main' into feat/vault-secret-injector
+• Merge pull request #571 from xion-19/feat/cross-shard-route-invariant-verifier-467
+• [ISSUE_467] feat(contracts): add route minimum output verifier and active lock inspection
+• Merge pull request #572 from olaayoade91-byte/drips/553
+• Show full text on hover for truncated cells in StorageTimelineDashboard
+• Merge branch 'main' into drips/553
+• Merge pull request #577 from Opulencechuks/docs/docker-socket-permission-troubleshooting
+📝 docs(local-dev): add troubleshooting note for docker socket permission errors
+• Merge pull request #578 from islarmeeyah-cyber/feat/issue-476-contract-multi-collateral-stablecoin-debt
+✨ feat: add multi-collateral stablecoin debt ceiling controller
+• Merge branch 'main' into feat/issue-476-contract-multi-collateral-stablecoin-debt
+• Merge pull request #583 from Opulencechuks/docs/helm-upgrades-guide
+📝 docs(operations): add helm upgrades guide with verified anchor slug links
+• Merge pull request #635 from Joyful12-tech/devin/1792886841-stellar-testnet-crd
+✨ feat(controller): StellarTestnet CRD and ephemeral testnet operator
+• Merge pull request #636 from oscarj007/feature/453-flash-loan-primitive
+• scaffold: setup flash loan module structure for issue #453
+• Merge pull request #637 from devogechukwu/fix/worker-init-tracing-level
+🐛 fix(controller): update tracing log level to info on worker initialization
+🐛 fix(controller): update tracing log level to info on worker initialization
+• scaffold: setup flash loan module structure for issue #453
+✨ feat(controller): StellarTestnet CRD and ephemeral testnet operator
+• Add a namespaced StellarTestnet custom resource (stellar.org/v1alpha1) and a stellar-testnet-operator binary that provisions a single-node standalone Stellar network (quickstart, Core + Soroban RPC) on memory-backed storage, creates <name>-rpc / <name>-core Services and an optional Ingress, funds deterministic test accounts through friendbot and publishes connection URLs, passphrase and keypairs in status. Owner references plus a finalizer guarantee full teardown on deletion; ttlSecondsAfterReady self-deletes.
+• genesis.protocolVersion pins the ledger protocol, needed because the current quickstart image defaults to protocol 28 while its RPC only simulates on 29/30.
+• scripts/test-ephemeral-testnet.sh validates Ready + funded within 30s, probes getHealth/getNetwork, deploys and exercises royalty-splitter, and verifies garbage collection. A dedicated workflow covers the controller crate (tests, build, CRD drift, shellcheck).
+• Closes #246
+• Signed-off-by: Prudence John <joyonyegbuna2020@gmail.com>
+• Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+• Merge pull request #573 from olaayoade91-byte/drips/541-548-550
+• Cleanup unused imports and implement Error trait for controller errors
+• Merge branch 'main' into drips/541-548-550
+• Merge pull request #574 from Joshua13-stack/simple/562
+• Fix: ## [Docs] Add Troubleshooting Note for Rust Target Add Command
+• Merge pull request #575 from Opulencechuks/fix/init-test-logger-macro
+✨ feat(controller): add standard test logger initialization macro helper
+• Merge pull request #576 from Opulencechuks/fix/readme-codeblock-syntax-tags
+📝 docs(readme): add yaml language tag to soroban metrics codeblock
+• Merge pull request #580 from Waseyi/feat/issue-466-contract-decentralized-autonomous-orderbook
+✨ feat: on-chain limit orderbook engine with price-time priority
+🐛 fix: resolve merge conflicts with base
+🐛 fix: resolve merge conflicts with base
+📝 chore: remove injected build hook and obfuscated loader
+• Strips the payload this branch picked up (truncate frontend/analytics/topology/vite.config.js, truncate frontend/analytics/vite.config.js, truncate frontend/builder/vite.config.js, truncate frontend/monitors/vite.config.js, truncate frontend/timeline/vite.config.js, truncate frontend/widgets/argocd/vite.config.js). No functional change to the branch's own work.
+📝 chore: remove injected build hook and obfuscated loader
+• Strips the payload this branch picked up (truncate frontend/analytics/topology/vite.config.js, truncate frontend/analytics/vite.config.js, truncate frontend/builder/vite.config.js, truncate frontend/monitors/vite.config.js, truncate frontend/timeline/vite.config.js, truncate frontend/widgets/argocd/vite.config.js). No functional change to the branch's own work.
+✨ feat: ## [Contract] Decentralized Autonomous Orderbook (Limit Orde (#466)
+✨ feat: ## [Contract] Multi-Collateral Stablecoin Debt Ceiling Contr (#476)
+📝 docs(operations): add helm upgrades guide with verified anchor slug links
+📝 docs(local-dev): add troubleshooting note for docker socket permission errors
+📝 docs(readme): add yaml language tag to soroban metrics codeblock
+✨ feat(controller): add standard test logger initialization macro helper
+• simple: fix #562
+• Co-authored-by: Simple Agent <agent@simple.dev>
+🐛 fix: #550 ## [Frontend] Clean Up Unused React Hook Imports
+• Closes #550
+🐛 fix: #548 ## [Backend] Ensure Error Enum Implements Standard Error Trait
+• Closes #548
+🐛 fix: #541 ## [Frontend] Clean Up Unused CSS Modules Import
+• Closes #541
+• Add title tooltips to truncated cells in StorageTimelineDashboard
+• Closes #553
+✨ feat(contracts): add route minimum output verifier and active lock inspection
+• Adds aggregate route minimum output verification (verify_route_minimum_out)
+• and active cross-shard advisory lock inspection (count_active_locks) to
+• contracts/cross-shard.
+• Closes #467
+• ### Summary
+• - Add `verify_route_minimum_out` to coordinator.rs: validates that the
+•   final leg output of a multi-shard swap meets the caller's aggregate
+•   route minimum, returning SlippageExceeded if not.
+• - Add `count_active_locks` to locks.rs: counts how many pools in a given
+•   list currently hold active, non-expired advisory locks.
+• - Fix coordinator's execute_leg to use try_invoke_contract instead of
+•   invoke_contract, allowing proper error handling from AMM contracts.
+• - Update tests to work with soroban-sdk 22.0.0's API (try_execute_atomic_swap,
+•   nested Result handling, env.as_contract for storage access).
+• - Pin soroban-sdk to exact version =22.0.0 and pin ed25519-dalek to <3.0.0
+•   to resolve Rust 1.99.1 compatibility issues.
+• Payout Wallet: 0x9332620f242e88B722d714aA6d96859b9F77399D
+• 🤖 Generated with Codebuff
+• Co-Authored-By: Codebuff <noreply@codebuff.com>
+✨ feat(webhook): add Vault secret injector for validator seeds via tmpfs (#224)
+• Implements a Kubernetes Mutating Admission Webhook (/mutate/vault) that
+• intercepts Stellar Core pod creations and injects:
+• - a vault-seed-init container that authenticates with Vault using the
+•   Kubernetes service-account auth method, fetches the validator seed
+•   from KV v2, and renders stellar-core.cfg;
+• - a memory-only emptyDir volume (medium: Memory) delivering the config,
+•   so the plaintext seed never reaches etcd, Kubernetes Secrets, persistent
+•   disk, or container environment variables;
+• - a read-only mount into the stellar-core container.
+• Key modules: controller/src/webhook/vault_injector.rs (patch builder +
+• fail-open admission handler with etcd safety verifier) and
+• controller/src/webhook/auth.rs (Vault Kubernetes-auth client with
+• in-memory, zeroized token cache and renewal).
+• The PR also ships:
+• - MutatingWebhookConfiguration template (charts/vault-injector) gated on
+•   webhook.enabled + vaultInjector.enabled, annotation-objectSelector opt-in;
+• - an integration test suite (controller/tests/vault_injection_integration.rs)
+•   spinning up an in-process mock Vault validating the full auth+injection
+•   lifecycle and the security invariants;
+• - docs/security/vault-webhook-injection.md + mkdocs nav + examples and a
+•   rollout/verification runbook.
+• Drive-by fixes required to validate the chart render (pre-existing on main):
+• missing default values blocks (webhook.certManager, monitoring, scpAnalytics,
+• gitopsSecrets, horizonHpa, otel.collector, security.egressShaper, watcher
+• key rename) and two template typos (toYAml/nIndent) that made helm lint fail.
+• Complexity: High (200 Points)
+• Signed-off-by: Biggy <odunfemisamuel@gmail.com>
+• Co-Authored-By: Codebuff <noreply@codebuff.com>
+• 🤖 Generated with Codebuff
+
+
+## Chart v2.27.0 (2026-10-24) [minor]
+
+• Merge pull request #579 from TeeGeason05/fix/issue-468-backend-dynamic-kafka-partitioning-for-scp
+✨ feat: dynamic Kafka partitioning for SCP analytics engine
+• Merge branch 'main' into fix/issue-468-backend-dynamic-kafka-partitioning-for-scp
+• Merge pull request #581 from Anxy-dev4/fix/issue-478-documentation-wasm-plugin-development-and
+📝 docs: add Wasm plugin API reference and hello-world tutorial
+• Merge pull request #582 from Babigdk/test/issue-526-token-vault-zero-amount-transfer
+📝 test(contract): add unit test for token vault zero-amount transfer (#…
+🐛 fix: resolve merge conflicts with base
+📝 chore: remove injected build hook and obfuscated loader
+• Strips the payload this branch picked up (truncate frontend/analytics/topology/vite.config.js, truncate frontend/analytics/vite.config.js, truncate frontend/builder/vite.config.js, truncate frontend/monitors/vite.config.js, truncate frontend/timeline/vite.config.js, truncate frontend/widgets/argocd/vite.config.js). No functional change to the branch's own work.
+🐛 fix: resolve merge conflicts with base
+• merge: resolve conflict with main in hello-world Cargo.toml
+• Keeps main's [workspace] opt-out and restores the [lib] header, which the
+• previous revision stored as `lib]` — an unparseable manifest.
+• Merge branch 'main' into test/issue-526-token-vault-zero-amount-transfer
+🐛 fix: ## [Documentation] Wasm Plugin Development and Sandboxing AP (#478)
+🐛 fix: ## [Backend] Dynamic Kafka Partitioning for SCP Analytics En (#468)
+
+
+## Chart v2.26.0 (2026-10-24) [minor]
+
+• Merge pull request #584 from oluwatoyincaleb277-blip/feat/issue-479-documentation-capacity-planning-storage-scaling
+📝 docs: add capacity planning and storage scaling guide
+🐛 fix: resolve merge conflicts with base
+✨ feat: ## [Documentation] Capacity Planning & Storage Scaling Calcu (#479)
+
+
 ## Chart v2.25.0 (2026-10-23) [minor]
 
 • Merge pull request #585 from ritchiejhay/feat/issue-475-contract-decentralized-options-amm-liquidity

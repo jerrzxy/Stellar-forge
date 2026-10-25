@@ -1,7 +1,7 @@
 # Hello World — Wasm Plugin Tutorial
 
-This tutorial walks you from zero to a running, deployed Wasm validation plugin
-for the Stellar Kubernetes Operator.  By the end you will have:
+This tutorial walks you from zero to a running, deployed Wasm validation
+plugin for the Stellar Kubernetes Operator.  By the end you will have:
 
 - A compilable Rust crate that targets `wasm32-unknown-unknown`
 - A loaded plugin that enforces two real admission-control policies
@@ -12,7 +12,7 @@ for the Stellar Kubernetes Operator.  By the end you will have:
 **Difficulty:** Beginner (familiarity with Rust and `kubectl` assumed)
 
 > **Troubleshooting:** If anything goes wrong, check
-> [`docs/plugins/wasm-troubleshooting.md`](../../docs/plugins/wasm-troubleshooting.md).
+ > [`docs/plugins/wasm-troubleshooting.md`](../../docs/plugins/wasm-troubleshooting.md).
 
 ---
 
@@ -49,11 +49,11 @@ The hello-world plugin enforces two admission-control policies on every
 `StellarNode` CREATE and UPDATE:
 
 | # | Rule | Field | Condition |
-|---|---|---|---|
+|---|------|-------|-----------|
 | 1 | **Mainnet replica requirement** | `spec.replicas` | Must be `>= 3` when `spec.network == "Mainnet"` |
 | 2 | **Required cost-center label** | `metadata.labels["cost-center"]` | Must be present and non-empty |
 
-It also emits an advisory **warning** (non-blocking) when
+It also emits an advisory ***warning** (non-blocking) when
 `spec.resources.limits.memory` is less than `512Mi`.
 
 DELETE and CONNECT operations are passed through without any checks.
@@ -121,12 +121,13 @@ The finished project looks like this:
 ```
 examples/wasm-plugins/hello-world/
 ├── Cargo.toml          # crate manifest
-├── build.sh            # convenience build script
-├── README.md           # this file
-└── src/
-    └── lib.rs          # plugin source code
+⌜── build.sh            # convenience build script
+⌜── README.md           # this file
+├── src/
+│   └── lib.rs          # plugin source code
+└── tests/
+    └── policy.rs       # integration tests for the policy logic
 ```
-
 You are reading the completed tutorial.  The source files in this directory are
 the finished product — you can read them alongside each step below.
 
@@ -139,7 +140,7 @@ the finished product — you can read them alongside each step below.
 Create the manifest.  Two key points:
 
 - `crate-type = ["cdylib"]` — produces a C-ABI dynamic library, which the Wasm
-  linker turns into a `.wasm` file with exported symbols.
+  linker turns into a .wasm` file with exported symbols.
 - The `[profile.release]` section ensures a small, fast binary.
 
 ```toml
@@ -166,8 +167,8 @@ strip = true
 ```
 
 > **Why `panic = "abort"`?**  The standard `panic = "unwind"` links in the
-> Rust unwinding runtime which adds ~30 KiB to the Wasm binary.  Since we
-> cannot sensibly recover from a panic inside a sandboxed plugin, aborting is
+# Rust unwinding runtime which adds ~30 KiB to the Wasm binary.  Since we
+# cannot sensibly recover from a panic inside a sandboxed plugin, aborting is
 > the right choice and keeps the binary small.
 
 ---
@@ -198,31 +199,31 @@ Define Rust structs that map to the JSON the runtime passes in and expects back.
 Use `serde`'s `rename_all = "camelCase"` to match the operator's JSON keys:
 
 ```rust
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+# [derive(serde::Deserialize)]
+# [serde(rename_all = "camelCase")]
 struct ValidationInput {
     operation: String,
     object: Option<serde_json::Value>,
     namespace: String,
     name: String,
     user_info: UserInfo,
-    #[serde(default)]
+    # [serde(default)]
     context: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+# [derive(serde::Serialize)]
+# [serde(rename_all = "camelCase")]
 struct ValidationOutput {
     allowed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    # [serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    # [serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    # [serde(skip_serializing_if = "Vec::is_empty")]
     errors: Vec<ValidationError>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    # [serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    # [serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     audit_annotations: std::collections::BTreeMap<String, String>,
 }
 ```
@@ -258,7 +259,7 @@ pub extern "C" fn validate() -> i32 {
 
     // 3. Require an object (always present for CREATE/UPDATE).
     let object = match &input.object {
-        Some(o) => o,
+        Some(ref o) => o,
         None => {
             write_denied("no object in request", "InvalidInput");
             return 1;
@@ -293,8 +294,8 @@ fn apply_policy(object: &serde_json::Value) -> ValidationOutput {
     // Rule 1 — required "cost-center" label
     let has_label = object
         .pointer("/metadata/labels/cost-center")
-        .map(|v| !v.as_str().unwrap_or("").is_empty())
-        .unwrap_or(false);
+        .map(|v | !v.as_str().unwrap_or("").is_empty())
+        .unwrap_or_else(false);
 
     if !has_label {
         errors.push(ValidationError {
@@ -305,7 +306,7 @@ fn apply_policy(object: &serde_json::Value) -> ValidationOutput {
 
     // Rule 2 — Mainnet needs >= 3 replicas
     let network  = object.pointer("/spec/network").and_then(|v| v.as_str()).unwrap_or("");
-    let replicas = object.pointer("/spec/replicas").and_then(|v| v.as_i64()).unwrap_or(1);
+    let replicas = object.pointer("/spec/replicas").and_then(|v | v.as_i64()).unwrap_or(1);
 
     if network == "Mainnet" && replicas < 3 {
         errors.push(ValidationError {
@@ -322,7 +323,7 @@ fn apply_policy(object: &serde_json::Value) -> ValidationOutput {
     let allowed = errors.is_empty();
     ValidationOutput {
         allowed,
-        message: if allowed { Some("all checks passed".into()) }
+        message: if allowed { Some("all checks passed".into())
                  else { Some(errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")) },
         reason:  if allowed { None } else { Some("PolicyViolation".into()) },
         errors,
@@ -365,9 +366,9 @@ fn log(msg: &str) {
 ```
 
 > **Safety note:** All calls to host functions are `unsafe` because they cross
-> the Wasm/host boundary.  The host validates pointer ranges before reading or
+# the Wasm/host boundary.  The host validates pointer ranges before reading or
 > writing, so a bad pointer returns `-1` rather than causing undefined
-> behaviour.  Always check return values in production plugins.
+# behaviour.  Always check return values in production plugins.
 
 ---
 
@@ -390,103 +391,68 @@ test tests::mainnet_with_1_replica_is_denied ... ok
 test tests::missing_cost_center_is_denied ... ok
 test tests::multiple_violations_reported_together ... ok
 test tests::testnet_with_1_replica_is_allowed ... ok
-test tests::low_memory_produces_warning ... ok
-test tests::parse_memory_mib_works ... ok
-
-test result: ok. 7 passed; 0 failed; 0 ignored
+test tests::low_memory_emits_warning ... ok
+test tests::delete_operation_is_skipped ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
-
-> Tests run against `apply_policy` directly — no host functions are called,
-> so no Wasm runtime is required.
 
 ---
 
 ## 6. Compile to WebAssembly
 
-### Using the build script (recommended)
+Build the release artifact:
 
 ```bash
-chmod +x build.sh
-./build.sh
+cargo build --release --type cdylib --target wasm32-unknown-unknown
 ```
 
-The script:
-1. Adds the `wasm32-unknown-unknown` target if it is missing.
-2. Runs `cargo test` (native) to catch logic errors before compiling.
-3. Runs `cargo build --target wasm32-unknown-unknown --release`.
-4. Prints the output path and file size.
-
-### Manually
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
-
-The output is at:
+The resulting module is at:
 
 ```
 target/wasm32-unknown-unknown/release/hello_world.wasm
 ```
 
-### With size optimisation (optional)
+Optionally shrink it with `wasm-opt`:
 
 ```bash
-./build.sh --opt
-# or manually:
-wasm-opt -Oz \
-  -o target/wasm32-unknown-unknown/release/hello_world.opt.wasm \
-     target/wasm32-unknown-unknown/release/hello_world.wasm
+wasm-opt -Oz -o hello-world.wasm \
+  target/wasm32-unknown-unknown/release/hello_world.wasm
 ```
 
-### Expected binary sizes
+The convenience script `build.sh` in this directory does both steps and
+copies the output to `target/hello-world.wasm`:
 
-| Build | Typical size |
-|---|---|
-| Debug | ~800 KiB |
-| Release (`opt-level = "z"`, `strip = true`) | ~50–80 KiB |
-| Release + `wasm-opt -Oz` | ~35–55 KiB |
+```bash
+chmod +x build.sh
+cargo build --release --type cdylib --target wasm32-unknown-unknown
+```
 
 ---
 
 ## 7. Inspect the binary
 
-Verify the compiled module exports the required symbols before deploying.
-
-### Using `wasm-objdump` (wasm-tools / wabt)
+Verify the exported entry point and the imported host functions are present:
 
 ```bash
-# Install wabt
-brew install wabt        # macOS
-apt-get install wabt     # Ubuntu
-
-wasm-objdump -x target/wasm32-unknown-unknown/release/hello_world.wasm \
+wasm-obj-dump -x target/wasm32-unknown-unknown/release/hello_world.wasm \
   | grep -E "Export|Import"
 ```
 
-Look for:
+Expected lines include:
 
 ```
-Export[2]:
- - func[0] <validate> -> "validate"
- - memory[0] -> "memory"
-
-Import[4]:
- - func env.get_input_len -> [0]
- - func env.read_input    -> [1]
- - func env.write_output  -> [2]
- - func env.log_message   -> [3]
+- type: [Export]
+  - func: validate
+- type: [Import]
+  - func: get_input_len
+  - func: read_input
+  - func: write_output
+  - func: log_message
 ```
 
-Both `validate` and `memory` must appear in the Export section, and all four
-host functions must appear in the Import section.
-
-### Using `wasm-tools` (Rust)
-
-```bash
-cargo install wasm-tools
-wasm-tools validate target/wasm32-unknown-unknown/release/hello_world.wasm
-# prints: hello_world.wasm is a valid WebAssembly file
-```
+If the `validate` export is missing, you forgot `#[no_mangle]` or the
+`crate-type = ["cdylib"]` setting.
 
 ---
 
@@ -494,77 +460,55 @@ wasm-tools validate target/wasm32-unknown-unknown/release/hello_world.wasm
 
 ### 8.1 Store the plugin in a ConfigMap
 
-```bash
-WASM=target/wasm32-unknown-unknown/release/hello_world.wasm
+The operator loads plugins from a ConfigMap in its namespace.  Create it
+from the compiled binary:
 
+```bash
 kubectl create configmap hello-world-plugin \
-  --from-file=plugin.wasm="$WASM" \
-  --namespace stellar-operator-system \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-Verify:
-
-```bash
-kubectl get configmap hello-world-plugin -n stellar-operator-system
-# NAME                  DATA   AGE
-# hello-world-plugin    1      5s
+  --from-file=hello-world.wasm=target/wasm32-unknown-unknown/release/hello_world.wasm \
+  -n stellar-operator-system
 ```
 
 ### 8.2 Update the operator plugin config
 
-Locate your operator's plugin configuration file (typically mounted at
-`/config/plugins.yaml` inside the operator pod, or managed via a ConfigMap).
-Add the hello-world entry:
+Register the plugin in the operator's configuration.  Patch the
+`StellarOperatorConfig` object so the controller picks up hello-world:
 
-```yaml
-plugins:
-  - metadata:
-      name: hello-world
-      version: "0.1.0"
-      description: "Hello World tutorial plugin"
-      limits:
-        timeoutMs: 1000
-        maxMemoryBytes: 16777216   # 16 MiB
-        maxFuel: 1000000
-    configMapRef:
-      name: hello-world-plugin
-      key: plugin.wasm
-      namespace: stellar-operator-system
-    operations:
-      - CREATE
-      - UPDATE
-    enabled: true
-    failOpen: false
+```bash
+kubectl patch stellaroperatorconfig default --type=merge -p '
+spec:
+  plugins:
+    - name: hello-world
+      path: hello-world.wasm
+      configMapRef: stellar-operator-system/hello-world-plugin
+      operations: [CREATE, UPDATE]
+'
 ```
 
-Apply the updated config and restart the operator:
+Restart the controller so it reloads the plugin list:
 
 ```bash
 kubectl rollout restart deployment/stellar-operator -n stellar-operator-system
-kubectl rollout status  deployment/stellar-operator -n stellar-operator-system
+kubectl rollout status deployment/stellar-operator -n stellar-operator-system
 ```
 
 ### 8.3 Verify the plugin loaded
 
+Tail the controller logs and look for the load confirmation:
+
 ```bash
-# Tail the operator logs and look for the load confirmation
 kubectl logs -n stellar-operator-system deployment/stellar-operator \
-  | grep "hello-world"
+  | grep "plugin"
+| grep --line-buffered hello-world
 ```
 
-Expected log line:
+You should see a line like:
 
 ```
-INFO stellar_operator::webhook::runtime: Plugin hello-world loaded successfully
+plugin hello-world loaded (sha256: <a digest>)
 ```
 
-You can also query the management API (replace `<POD>` with the operator pod name):
-
-```bash
-kubectl exec -n stellar-operator-system <POD> -- \
-  curl -sk https://localhost:8443/plugins | jq '.plugins[].name'
-```
+If you see an error instead, jump to the troubleshooting guide.
 
 ---
 
@@ -572,167 +516,108 @@ kubectl exec -n stellar-operator-system <POD> -- \
 
 ### 9.1 Test: request that should be denied
 
-Apply a StellarNode that violates both rules (no cost-center label, Mainnet with
-1 replica):
+This manifest fails both rules (Mainnet with 1 replica, no cost-center
+label):
 
-```bash
-cat <<'EOF' | kubectl apply -f -
-apiVersion: stellar.org/v1alpha1
+```yaml
+apiVersion: stellar.stellar.org/v1
 kind: StellarNode
 metadata:
-  name: bad-node
+  name: deny-test
   namespace: default
-  # cost-center label intentionally missing
 spec:
   network: Mainnet
-  replicas: 1               # too few for Mainnet
-  version: "docker.io/stellar/stellar-core:v21.3.0"
+  replicas: 1
+  nodeType: Validator
   resources:
     limits:
-      cpu: "1"
-      memory: "2Gi"
-EOF
+      memory: 256Mi
+```
+
+```bash
+kubectl apply -f deny.yaml
 ```
 
 Expected output:
 
 ```
-Error from server: error when creating "STDIN":
-admission webhook "validate.stellarnode.stellar.org" denied the request:
-[hello-world] label "cost-center" is required on every StellarNode;
-[hello-world] Mainnet StellarNodes must have spec.replicas >= 3, got 1
+Error from server: error when creating "deny.yaml": admission webhook "deny.yaml"
+denied the request: plugin hello-world: label "cost-center" is required;
+Mainnet nodes need replicas >= 3, got 1
 ```
 
 ### 9.2 Test: request that should be allowed
 
-Apply a valid StellarNode:
+This manifest satisfies both rules:
 
-```bash
-cat <<'EOF' | kubectl apply -f -
-apiVersion: stellar.org/v1alpha1
+```yaml
+apiVersion: stellar.stellar.org/v1
 kind: StellarNode
 metadata:
-  name: good-node
+  name: allow-test
   namespace: default
   labels:
-    cost-center: "engineering"
+    cost-center: "platform-team"
 spec:
   network: Mainnet
   replicas: 3
-  version: "docker.io/stellar/stellar-core:v21.3.0"
+  nodeType: Validator
   resources:
     limits:
-      cpu: "2"
-      memory: "4Gi"
-EOF
+      memory: 1Gi
+```
+
+```bash
+kubectl apply -f allow.yaml
 ```
 
 Expected output:
 
 ```
-stellarnode.stellar.org/good-node created
+stellarnode.stellar.stellar.org/allow-test created
 ```
 
-Verify the audit annotation was written:
+Confirm the audit annotation was recorded:
 
 ```bash
-kubectl get stellarnode good-node -o jsonpath=\
-  '{.metadata.annotations.hello-world\.stellar\.org/checked}'
-# true
+cubkubl get stellarnode allow-test -n default \
+  -o jsonpath='{.spec.auditAnnotations}'
 ```
 
-View plugin debug logs:
+Expected:
 
-```bash
-kubectl logs -n stellar-operator-system deployment/stellar-operator \
-  | grep "wasm_plugin"
-# hello-world: validating CREATE operation
-# hello-world: network=Mainnet, replicas=3
+```
+{"hello-world.stellar.org/checked":"true"}
 ```
 
 ---
 
 ## 10. Extend the plugin
 
-Some ideas to practice with:
+Some ideas for extending the plugin:
 
-### Add a new policy rule
+- **Add a third rule** that requires `spec.nodeType == "Validator"` for Mainnet
+  nodes.
+- **Read context values** from `input.context` (e.g. a tenant allow-list).
+- **Emit an audit annotation** with the computed policy decision for forensics.
+- **Log structured data** via `log_message` to help operators debug rejections.
 
-Inside `apply_policy`, add a check for the `owner` annotation:
-
-```rust
-let has_owner = object
-    .pointer("/metadata/annotations/owner")
-    .map(|v| !v.as_str().unwrap_or("").is_empty())
-    .unwrap_or(false);
-
-if !has_owner {
-    errors.push(ValidationError {
-        field: "metadata.annotations.owner".into(),
-        message: r#"annotation "owner" is required"#.into(),
-    });
-}
-```
-
-Then add a matching unit test:
-
-```rust
-#[test]
-fn missing_owner_annotation_is_denied() {
-    let obj = serde_json::json!({
-        "metadata": {
-            "labels": { "cost-center": "eng" },
-            "annotations": {}            // owner missing
-        },
-        "spec": { "network": "Testnet", "replicas": 1 }
-    });
-    let out = apply_policy(&obj);
-    assert!(!out.allowed);
-    assert!(out.errors.iter().any(|e| e.field.contains("owner")));
-}
-```
-
-### Use `context` to pass operator-controlled config
-
-The `context` map lets the operator inject configuration at runtime without
-recompiling the plugin:
-
-```yaml
-# In plugins.yaml
-pluginConfig:
-  allowed_networks: "Mainnet,Testnet"
-```
-
-In the plugin, read it from `input.context`:
-
-```rust
-let allowed = input.context
-    .get("allowed_networks")
-    .map(|v| v.split(',').any(|n| n.trim() == network))
-    .unwrap_or(true); // default: allow all networks
-```
+After editing `src/lib.rs`, re-run `cargo test`, rebuild, replace the
+ConfigMap entry, and restart the controller.
 
 ---
 
 ## 11. Clean up
 
+Remove the plugin and test objects:
+
 ```bash
-# Remove the test StellarNodes
-kubectl delete stellarnode good-node bad-node --ignore-not-found
-
-# Remove the plugin ConfigMap
+kubectl delete stellarnode allow-test -n default --ignore-not-found
 kubectl delete configmap hello-world-plugin -n stellar-operator-system
-
-# Remove the plugin entry from plugins.yaml, then restart the operator
+kubectl patch stellaroperatorconfig default --type=json -p '[{"op": "remove", "path": "/spec/plugins"}]'
 kubectl rollout restart deployment/stellar-operator -n stellar-operator-system
 ```
 
----
-
-## Next steps
-
-- Read the full [Wasm Plugin API Reference](../../docs/plugins/wasm-api.md)
-- Study the [image-registry-validator](../../../examples/plugins/image-registry-validator/)
-  for a more complete example
-- Check the [Sandboxing Troubleshooting Guide](../../docs/plugins/wasm-troubleshooting.md)
-  if your plugin behaves unexpectedly
+You now have a working Wasm validation plugin and the knowledge to build
+more.  See [`docs/plugins/wasm-api.md`](../../docs/plugins/wasm-api.md) for the
+complete ABI reference.

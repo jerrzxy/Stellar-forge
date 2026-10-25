@@ -111,6 +111,7 @@ pub mod deployment_strategy;
 pub mod error;
 
 pub mod fork_detector;
+pub mod gateway;
 pub mod incident;
 pub mod infra;
 pub mod load_balancer;

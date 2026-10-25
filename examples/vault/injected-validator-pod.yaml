@@ -1,0 +1,52 @@
+# Stellar Core validator pod onboarded to the HashiCorp Vault secret injector.
+#
+# Requirements:
+#   1. Vault reachable at the address below with the Kubernetes auth method
+#      mounted and the `stellar-validator` role bound to this pod's
+#      ServiceAccount (see docs/security/vault-webhook-injection.md).
+#   2. The stellar-vault-injector MutatingWebhookConfiguration installed
+#      (charts/stellar-operator/templates/vault-injector.yaml, Helm values:
+#      webhook.enabled=true, vaultInjector.enabled=true).
+#   3. A seed stored at `secret/data/stellar/validator` under the key `seed`.
+#
+# After the pod is admitted, verify the invariants:
+#   kubectl get pod validator-0 -o json \
+#     | jq '.spec.initContainers[].name'                       # vault-seed-init
+#   kubectl get pod validator-0 -o json \
+#     | jq '.spec.volumes[] | select(.name=="stellar-seed-tmpfs")'
+#   # → emptyDir { medium: "Memory" } — tmpfs, RAM only
+#   kubectl get secrets -o json | jq -r '.items[].metadata.name' \
+#     | grep -c validator-0                                    # → no result
+#   kubectl exec validator-0 -c stellar-core -- ls /etc/stellar-seed
+#   # → stellar-core.cfg: contains the plaintext seed, but ONLY on tmpfs
+apiVersion: v1
+kind: Pod
+metadata:
+  name: validator-0
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-core
+    app.kubernetes.io/component: validator
+  annotations:
+    # Opt-in: the vault injector mutating webhook only fires on this flag.
+    stellar.io/vault-injection: "enabled"
+    # Per-pod Vault parameters (overrides chart defaults).  All non-secret.
+    stellar.io/vault-addr: "https://vault.vault.svc:8200"
+    stellar.io/vault-role: "stellar-validator"
+    stellar.io/vault-secret-path: "secret/data/stellar/validator"
+    stellar.io/vault-secret-key: "seed"
+spec:
+  serviceAccountName: stellar-validator
+  containers:
+    - name: stellar-core
+      image: stellar/stellar-core:21.0.0
+      # The seed tmpfs is mounted read-only; the core process reads the
+      # plaintext stellar-core.cfg straight from memory-backed storage.
+      volumeMounts: []  # augmented read-only by the injector at admission
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+  # The pod initially has no volumes or init containers: both are injected by
+  # the webhook — an init container (auth → fetch → render stellar-core.cfg)
+  # and a 16Mi tmpfs emptyDir (medium: Memory).

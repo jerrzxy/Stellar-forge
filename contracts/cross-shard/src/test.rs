@@ -41,7 +41,7 @@ extern crate std;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short,
     testutils::{Address as _, Ledger},
-    vec, Address, Env, Symbol, Val,
+    vec, Vec, Address, Env, Symbol, Val,
 };
 
 use crate::{
@@ -68,7 +68,7 @@ enum AmmKey {
 }
 
 /// A minimal AMM pool stub for testing.
-///
+///\n///
 /// * `set_rate(rate)` — configure exchange rate (default 95 = 95%).
 /// * `set_should_fail(true)` — makes the next `swap` call panic.
 /// * `swap(amount_in, min_out, token_in, token_out)` — returns
@@ -231,6 +231,23 @@ fn make_transition(
     }
 }
 
+/// Helper: call try_execute_atomic_swap and extract the inner Ok value.
+/// Panics if the call fails (for happy-path tests).
+fn execute_swap(coord: &CrossShardCoordinatorClient, trader: &Address, transitions: &Vec<ShardTransition>) -> Vec<i128> {
+    coord.try_execute_atomic_swap(trader, transitions)
+        .expect("invocation failed")
+        .expect("contract returned error")
+}
+
+/// Helper: call try_execute_atomic_swap and assert it fails.
+fn execute_swap_fails(coord: &CrossShardCoordinatorClient, trader: &Address, transitions: &Vec<ShardTransition>) {
+    let result = coord.try_execute_atomic_swap(trader, transitions);
+    assert!(
+        result.is_err() || result.expect("invocation failed").is_err(),
+        "swap should have failed but succeeded"
+    );
+}
+
 // ── Core tests ────────────────────────────────────────────────────────────────
 
 /// Happy path: all three AMMs succeed; verify commit and output amounts.
@@ -248,9 +265,7 @@ fn three_pool_swap_all_succeed() {
         make_transition(&env, amm_c.clone(), 902,  800),
     ];
 
-    let amounts_out = coord
-        .execute_atomic_swap(&trader, &transitions)
-        .expect("three-pool swap should succeed");
+    let amounts_out = execute_swap(&coord, &trader, &transitions);
 
     assert_eq!(amounts_out.len(), 3);
     assert_eq!(amounts_out.get(0).unwrap(), 950);  // 1000 * 95 / 100
@@ -299,12 +314,8 @@ fn three_pool_swap_third_fails_all_revert() {
         make_transition(&env, amm_c.clone(), 902,  800), // ← this leg will fail
     ];
 
-    // The swap must return an error (or panic, caught by the test harness).
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(
-        result.is_err(),
-        "swap must fail when the third AMM panics"
-    );
+    // The swap must fail — either the invocation fails or the contract returns an error.
+    execute_swap_fails(&coord, &trader, &transitions);
 
     // ── Atomicity verification ──────────────────────────────────────────────
     //
@@ -381,8 +392,7 @@ fn slippage_on_second_leg_reverts_all() {
         make_transition(&env, amm_c.clone(), 902, 800),
     ];
 
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(result.is_err(), "slippage on leg 2 must cause overall failure");
+    execute_swap_fails(&coord, &trader, &transitions);
 
     // Leg 1 (AMM A) must have its writes reverted.
     assert_eq!(
@@ -423,8 +433,7 @@ fn expired_deadline_rejected_before_execution() {
         make_transition(&env, amm_c.clone(), 902, 800),
     ];
 
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(result.is_err(), "expired deadline must reject the swap");
+    execute_swap_fails(&coord, &trader, &transitions);
 
     // No AMM was touched; AMM A's counter stays at zero.
     assert_eq!(amm_a_client.swap_count(), 0);
@@ -442,8 +451,7 @@ fn too_few_transitions_rejected() {
         make_transition(&env, amm_a.clone(), 1000, 900),
     ];
 
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(result.is_err(), "single-pool swap must be rejected");
+    execute_swap_fails(&coord, &trader, &transitions);
 }
 
 /// Admin pause: swaps are rejected while the coordinator is paused.
@@ -451,7 +459,7 @@ fn too_few_transitions_rejected() {
 fn swap_rejected_when_paused() {
     let (env, coord, amm_a, amm_b, amm_c, admin, trader) = setup();
 
-    coord.set_paused(&admin, &true).unwrap();
+    coord.try_set_paused(&admin, &true).expect("set_paused failed");
     assert!(coord.is_paused());
 
     let transitions = vec![
@@ -461,14 +469,13 @@ fn swap_rejected_when_paused() {
         make_transition(&env, amm_c.clone(), 902,  800),
     ];
 
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(result.is_err(), "swap must fail when coordinator is paused");
+    execute_swap_fails(&coord, &trader, &transitions);
 
     // Unpause and verify swaps work again.
-    coord.set_paused(&admin, &false).unwrap();
+    coord.try_set_paused(&admin, &false).expect("set_paused failed");
     assert!(!coord.is_paused());
-    let result2 = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(result2.is_ok(), "swap must succeed after unpause");
+    let amounts_out = execute_swap(&coord, &trader, &transitions);
+    assert_eq!(amounts_out.len(), 3);
 }
 
 /// Double-initialisation must be rejected.
@@ -476,8 +483,9 @@ fn swap_rejected_when_paused() {
 fn double_initialize_rejected() {
     let (env, coord, _amm_a, _amm_b, _amm_c, admin, _trader) = setup();
     // Already initialized in setup(); second call must fail.
-    let result = coord.initialize(&admin);
-    assert!(result.is_err(), "double initialize must return AlreadyInitialized");
+    let result = coord.try_initialize(&admin);
+    assert!(result.is_err() || result.expect("invocation failed").is_err(),
+        "double initialize must return AlreadyInitialized");
 }
 
 /// Force-releasing a lock that hasn't expired must be rejected.
@@ -499,9 +507,9 @@ fn force_release_unexpired_lock_rejected() {
             .set(&DataKey::PoolLock(amm_a.clone()), &lock);
     });
 
-    let result = coord.force_release_lock(&amm_a);
+    let result = coord.try_force_release_lock(&amm_a);
     assert!(
-        result.is_err(),
+        result.is_err() || result.expect("invocation failed").is_err(),
         "force_release on a valid lock must fail with LockStillValid"
     );
 }
@@ -517,9 +525,7 @@ fn two_pool_swap_succeeds() {
         make_transition(&env, amm_b.clone(), 950,  850),
     ];
 
-    let amounts_out = coord
-        .execute_atomic_swap(&trader, &transitions)
-        .expect("two-pool swap should succeed");
+    let amounts_out = execute_swap(&coord, &trader, &transitions);
 
     assert_eq!(amounts_out.len(), 2);
     assert_eq!(amounts_out.get(0).unwrap(), 950);
@@ -540,14 +546,17 @@ fn sequential_swaps_increment_counter() {
         ]
     };
 
-    coord.execute_atomic_swap(&trader, &t()).unwrap();
+    let amounts_out = execute_swap(&coord, &trader, &t());
     assert_eq!(coord.last_swap_id(), 1);
+    assert_eq!(amounts_out.len(), 3);
 
-    coord.execute_atomic_swap(&trader, &t()).unwrap();
+    let amounts_out = execute_swap(&coord, &trader, &t());
     assert_eq!(coord.last_swap_id(), 2);
+    assert_eq!(amounts_out.len(), 3);
 
-    coord.execute_atomic_swap(&trader, &t()).unwrap();
+    let amounts_out = execute_swap(&coord, &trader, &t());
     assert_eq!(coord.last_swap_id(), 3);
+    assert_eq!(amounts_out.len(), 3);
 }
 
 /// Pool locking: if Pool A is already locked, a second swap involving Pool A
@@ -577,9 +586,5 @@ fn concurrent_swap_rejected_if_pool_locked() {
         make_transition(&env, amm_c.clone(), 902,  800),
     ];
 
-    let result = coord.execute_atomic_swap(&trader, &transitions);
-    assert!(
-        result.is_err(),
-        "swap must fail with PoolAlreadyLocked when a pool is locked"
-    );
+    execute_swap_fails(&coord, &trader, &transitions);
 }

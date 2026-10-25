@@ -95,6 +95,27 @@ impl UnprofitableReceiver {
     }
 }
 
+#[contracttype]
+enum PartialKey {
+    Pool,
+}
+
+#[contract]
+pub struct PartialReceiver;
+
+#[contractimpl]
+impl PartialReceiver {
+    pub fn init(env: Env, pool: Address) {
+        env.storage().instance().set(&PartialKey::Pool, &pool);
+    }
+
+    pub fn execute_operation(env: Env, token: Address, amount: i128, _fee: i128, _data: Bytes) {
+        let pool: Address = env.storage().instance().get(&PartialKey::Pool).unwrap();
+        let me = env.current_contract_address();
+        TokenClient::new(&env, &token).transfer(&me, &pool, &(amount - 1));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reentrant receiver — attempts a second flash_loan call mid-execution.
 // ---------------------------------------------------------------------------
@@ -312,6 +333,37 @@ fn test_unprofitable_flash_loan_reverts() {
         &Bytes::new(&ctx.env),
     );
     assert!(result.is_err(), "unprofitable loan must revert");
+    assert_eq!(ctx.pool().get_pool_balance(&ctx.token_addr), 10_000_000);
+    assert_eq!(ctx.token().balance(&ctx.pool_addr), 10_000_000);
+    assert_eq!(ctx.pool().get_total_borrowed(&ctx.token_addr), 0);
+    assert_eq!(ctx.pool().get_total_fees_collected(&ctx.token_addr), 0);
+    assert!(!ctx.pool().is_loan_active(&ctx.token_addr));
+}
+
+#[test]
+fn test_partial_principal_repayment_reverts_without_pool_loss() {
+    let ctx = TestContext::setup(30);
+    ctx.fund_pool(10_000_000);
+
+    let receiver_addr = ctx.env.register(PartialReceiver, ());
+    let receiver_client = PartialReceiverClient::new(&ctx.env, &receiver_addr);
+    receiver_client.init(&ctx.pool_addr);
+
+    let borrow_amount = 500_000;
+    ctx.asset().mint(&receiver_addr, &borrow_amount);
+    let result = ctx.pool().try_flash_loan(
+        &ctx.token_addr,
+        &borrow_amount,
+        &receiver_addr,
+        &Bytes::new(&ctx.env),
+    );
+
+    assert_eq!(result, Err(Ok(Error::RepaymentDeficit)));
+    assert_eq!(ctx.pool().get_pool_balance(&ctx.token_addr), 10_000_000);
+    assert_eq!(ctx.token().balance(&ctx.pool_addr), 10_000_000);
+    assert_eq!(ctx.pool().get_total_borrowed(&ctx.token_addr), 0);
+    assert_eq!(ctx.pool().get_total_fees_collected(&ctx.token_addr), 0);
+    assert!(!ctx.pool().is_loan_active(&ctx.token_addr));
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +398,35 @@ fn test_reentrancy_lock_is_cleared_after_successful_loan() {
         !ctx.pool().is_loan_active(&ctx.token_addr),
         "reentrancy lock must be released after successful loan"
     );
+}
+
+#[test]
+fn test_malicious_receiver_cannot_reenter_flash_loan() {
+    let ctx = TestContext::setup(30);
+    ctx.fund_pool(10_000_000);
+
+    let receiver_addr = ctx.env.register(ReentrantReceiver, ());
+    let receiver_client = ReentrantReceiverClient::new(&ctx.env, &receiver_addr);
+    receiver_client.init(&ctx.pool_addr);
+
+    let borrow_amount = 100_000;
+    let fee = ctx.pool().quote_fee(&ctx.token_addr, &borrow_amount);
+    ctx.asset().mint(&receiver_addr, &(borrow_amount + fee));
+
+    assert_eq!(
+        ctx.pool().flash_loan(
+            &ctx.token_addr,
+            &borrow_amount,
+            &receiver_addr,
+            &Bytes::new(&ctx.env),
+        ),
+        fee
+    );
+    assert_eq!(
+        ctx.pool().get_pool_balance(&ctx.token_addr),
+        10_000_000 + fee
+    );
+    assert!(!ctx.pool().is_loan_active(&ctx.token_addr));
 }
 
 #[test]

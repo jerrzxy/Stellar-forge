@@ -13,42 +13,42 @@ metadata:
     app.kubernetes.io/component: validator
     stellar.org/network: testnet
 spec:
-  # Node type: Validator (requires persistent storage for ledger data)
+  # nodeType: Validator (requires persistent storage for ledger data)
   nodeType: Validator
-  
-  # Network configuration
+
+  # network configuration
   network: testnet
-  
+
   # Stellar Core version
   version: "v21.0.0"
-  
-  # History mode: Full history requires more storage
+
+  # historyMode: Full history requires more storage
   historyMode: Full
-  
+
   # Storage configuration
   # The operator will monitor this PVC and automatically expand it
   # when disk usage exceeds 80% (configurable in operator config)
   storage:
     # Use persistent volume (required for validators)
     mode: PersistentVolume
-    
+
     # Storage class that supports volume expansion
     # IMPORTANT: The StorageClass must have allowVolumeExpansion: true
     storageClass: fast-ssd
-    
+
     # Initial size: 1500Gi for full history mode
     # This will be automatically expanded as needed
     size: "1500Gi"
-    
+
     # Retention policy: Retain PVC when node is deleted
     retentionPolicy: Retain
-    
+
     # Optional: Annotations for cost tracking
     annotations:
       cost-center: "stellar-infrastructure"
       environment: "production"
       auto-scaling: "enabled"
-  
+
   # Resource requirements
   resources:
     requests:
@@ -57,7 +57,7 @@ spec:
     limits:
       cpu: "4"
       memory: "16Gi"
-  
+
   # Quorum configuration
   quorumSet:
     threshold: 3
@@ -65,21 +65,21 @@ spec:
       - name: sdf1
         publicKey: "GCGB2S2KGYARPVIA37HYZXVRM2YZUEXA6S33ZU5BUDC6THSB62LZSTYH"
       - name: sdf2
-        publicKey: "GCM6QMP3DLRPTAZW2UZPCPX2LF3SXWXKPMP3GKFZBDSF3QZGV2G5QSTK"
+        publicKey: "GCM6QMP3DLRPTAZW2UZPCPX2LF3SXWXKPMP3GKFZMPBDSF3QZGV2G5QSTK"
       - name: sdf3
         publicKey: "GABMKJM6I25XI4K7U6XWMULOUQIQ27BCTMLS6BYYSOWKTBUXVRJSXHYQ"
-  
+
   # Enable monitoring for disk usage metrics
   autoscaling:
     enabled: false  # HPA not needed for validators
-  
+
   # Snapshot schedule for backup (optional)
   snapshotSchedule:
     enabled: true
     schedule: "0 2 * * *"  # Daily at 2 AM
     retentionPolicy:
       maxSnapshots: 7
-  
+
   # Alerting configuration
   alerting:
     enabled: true
@@ -91,7 +91,7 @@ spec:
         annotations:
           summary: "High disk usage detected"
           description: "Disk usage is above 75%, automatic expansion will trigger at 80%"
-      
+
       - alert: MaxExpansionsReached
         expr: stellar_pvc_expansion_count >= 10
         for: 5m
@@ -108,7 +108,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: fast-ssd
-provisioner: kubernetes.io/aws-ebs  # Or ebs.csi.aws.com for CSI driver
+provisioner: ebs.csi.aws.com
 parameters:
   type: gp3
   iops: "3000"

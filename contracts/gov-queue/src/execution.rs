@@ -9,9 +9,13 @@
 //! 3. **Cancellation** — collecting guardian signatures and cancelling a queued proposal
 //!    once the threshold is met.
 
-use soroban_sdk::{contracttype, symbol_short, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 
 use crate::types::{DataKey, GovError, Proposal, ProposalStatus};
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const GUARDIAN_SIG_BUMP: u32 = 90 * DAY_IN_LEDGERS;
+const GUARDIAN_SIG_THRESHOLD: u32 = GUARDIAN_SIG_BUMP - DAY_IN_LEDGERS;
 
 // ---------------------------------------------------------------------------
 // Delay enforcement
@@ -54,34 +58,24 @@ pub fn assert_delay_elapsed(env: &Env, proposal: &Proposal) -> Result<(), GovErr
 ///
 /// # Safety / error isolation
 ///
-/// The call is executed via `try_invoke_contract` which returns a `Result`
-/// instead of panicking.  This guarantees that a failing call **does not**
-/// unwind the top-level transaction, allowing the contract to mark the
-/// proposal as `Failed` and preserve all other queue state.
+/// The call is executed via `try_invoke_contract`, which returns invocation
+/// errors instead of unwinding the top-level transaction. This allows the
+/// caller to persist `Failed` without rolling back unrelated queue state.
 ///
 /// Returns `Ok(())` on success or `Err(GovError::ExecutionFailed)` if the
 /// target contract returns an error or panics.
 pub fn dispatch_proposal(env: &Env, proposal: &Proposal) -> Result<(), GovError> {
-    // Build the argument vector from the stored calldata bytes.
-    // The calldata is treated as a pre-serialised Val sequence; for this
-    // implementation we pass it as a single `Bytes` argument which the
-    // target contract is expected to decode.  Production integrations would
-    // use a typed Vec<Val> decoded from the calldata field.
+    // This registry encodes the target payload as one Bytes argument.
     let args: Vec<Val> = soroban_sdk::vec![env, proposal.calldata.clone().into_val(env)];
 
-    let result = env.invoke_contract::<Val>(
+    match env.try_invoke_contract::<Val, soroban_sdk::Error>(
         &proposal.target,
         &proposal.function,
         args,
-    );
-
-    // invoke_contract panics on failure in a standard Soroban environment.
-    // We mark the proposal as Failed in the caller (lib.rs) after catching
-    // the error via the contract's error handling path.
-    // For the test environment, invoke_contract returns normally; any panic
-    // propagates and is caught by the #[test] harness.
-    let _ = result; // silence unused-variable warning; value is dropped safely
-    Ok(())
+    ) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(_)) | Err(Ok(_)) | Err(Err(_)) => Err(GovError::ExecutionFailed),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,10 +122,9 @@ pub fn record_guardian_sig(
 
     sigs.push_back(caller.clone());
 
-    // Store with a TTL of ~100 ledgers (enough for the signing ceremony).
-    env.storage()
-        .temporary()
-        .set(&sig_key, &sigs);
+    let storage = env.storage().temporary();
+    storage.set(&sig_key, &sigs);
+    storage.extend_ttl(&sig_key, GUARDIAN_SIG_THRESHOLD, GUARDIAN_SIG_BUMP);
 
     let threshold: u32 = env
         .storage()

@@ -1,0 +1,253 @@
+# Copyright 2024 Stellar-K8s Contributors
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# yamllint disable rule:line-length
+# The StellarTestnet CustomResourceDefinition.
+#
+# Generated from the operator binary so it always matches the schema the
+# controller serves; regenerate after changing the CRD types:
+#
+#   cargo run --bin stellar-testnet-operator -- crd > deploy/stellartestnets.yaml
+#
+# The operator also installs this CRD automatically at startup, so applying
+# it explicitly is only needed before the controller first runs (kubectl
+# apply of a StellarTestnet waits for the CRD to be established).
+#
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: stellartestnets.stellar.org
+spec:
+  group: stellar.org
+  names:
+    categories: []
+    kind: StellarTestnet
+    plural: stellartestnets
+    shortNames:
+    - stn
+    singular: stellartestnet
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Lifecycle phase of the testnet
+      jsonPath: .status.phase
+      name: Phase
+      type: string
+    - description: Soroban RPC endpoint
+      jsonPath: .status.rpcUrl
+      name: RPC
+      type: string
+    - description: Age of the testnet
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StellarTestnetSpec via `CustomResource`
+        properties:
+          spec:
+            description: The `StellarTestnet` custom resource.
+            properties:
+              accounts:
+                default: []
+                description: Pre-funded test accounts that are created (and funded via friendbot) as part of provisioning.
+                items:
+                  description: A pre-funded test account requested in `spec.accounts`.
+                  properties:
+                    name:
+                      default: ''
+                      description: Human readable name, unique within the resource. Used as the input for deterministic key derivation, so repeated reconciles always yield the same keypair for the same name.
+                      type: string
+                    publicKey:
+                      description: Optional externally managed public key (`G...`). When omitted the operator derives a fresh keypair for this account.
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
+              genesis:
+                description: Genesis ledger configuration for the ephemeral network.
+                nullable: true
+                properties:
+                  networkPassphrase:
+                    description: Network passphrase signed into every transaction. Must match the passphrase of the container stack; defaults to the standalone quickstart passphrase.
+                    nullable: true
+                    type: string
+                  protocolVersion:
+                    description: Ledger protocol version the genesis node upgrades to on start (quickstart `--protocol-version`). Defaults to the image's own default. Pin it when the image's default protocol is older than the Soroban host its RPC ships with, otherwise contract simulation fails.
+                    format: uint32
+                    minimum: 20.0
+                    nullable: true
+                    type: integer
+                  storage:
+                    description: Where the node databases live. `memory` (the default) keeps every database in RAM-backed `emptyDir` volumes so a deleted testnet leaves nothing behind; `disk` uses node-local (still ephemeral) storage.
+                    enum:
+                    - memory
+                    - disk
+                    nullable: true
+                    type: string
+                type: object
+              image:
+                description: Container image that provides Stellar Core, Soroban RPC and friendbot. Defaults to `stellar/quickstart:latest`.
+                nullable: true
+                type: string
+              rpc:
+                description: Configuration of the Soroban RPC interface (currently ingress exposure).
+                nullable: true
+                properties:
+                  ingress:
+                    description: Optional Ingress exposing the RPC (and friendbot) endpoints outside the cluster.
+                    nullable: true
+                    properties:
+                      className:
+                        description: '`ingressClassName` to request (for example `nginx`).'
+                        nullable: true
+                        type: string
+                      enabled:
+                        description: Set to `true` to create an Ingress for this testnet.
+                        nullable: true
+                        type: boolean
+                      host:
+                        description: Optional hostname rule. When omitted the Ingress matches any host.
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+              ttlSecondsAfterReady:
+                description: When set, the operator deletes the whole `StellarTestnet` this many seconds after the network first becomes `Ready`. Used by CI pipelines to guarantee teardown even when a job is killed before it can delete the manifest. Defaults to no automatic teardown.
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+            type: object
+          status:
+            description: Status reported by the operator, including all connection URLs.
+            nullable: true
+            properties:
+              accounts:
+                description: Details of every pre-funded account declared in `spec.accounts`.
+                items:
+                  description: Account details reported in `status.accounts`.
+                  properties:
+                    funded:
+                      description: Whether friendbot has confirmed funding.
+                      type: boolean
+                    name:
+                      description: Name from `spec.accounts`.
+                      type: string
+                    publicKey:
+                      description: Public key (`G...`) of the account.
+                      type: string
+                    secretKey:
+                      description: Secret key (`S...`) for operator-generated accounts. Never set for user-provided keys. These are throwaway keys for an ephemeral network and are only safe because the whole network disappears on delete.
+                      nullable: true
+                      type: string
+                    source:
+                      description: Whether the keypair was generated by the operator or supplied.
+                      enum:
+                      - generated
+                      - provided
+                      type: string
+                  required:
+                  - funded
+                  - name
+                  - publicKey
+                  - source
+                  type: object
+                nullable: true
+                type: array
+              conditions:
+                description: Conditions, including `Ready` (used by `kubectl wait`).
+                items:
+                  description: A Kubernetes condition stored in `status.conditions`.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC 3339 timestamp of the last transition.
+                      nullable: true
+                      type: string
+                    message:
+                      description: Human readable detail.
+                      nullable: true
+                      type: string
+                    reason:
+                      description: Machine readable reason, for example `Provisioned`.
+                      nullable: true
+                      type: string
+                    status:
+                      description: '`"True"`, `"False"` or `"Unknown"`.'
+                      type: string
+                    type:
+                      description: Condition type, `Ready` for the top-level readiness condition.
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                nullable: true
+                type: array
+              coreAdminUrl:
+                description: Cluster-internal Stellar Core admin HTTP URL.
+                nullable: true
+                type: string
+              externalRpcUrl:
+                description: Externally reachable RPC URL when an Ingress is enabled.
+                nullable: true
+                type: string
+              friendbotUrl:
+                description: Cluster-internal friendbot URL used to fund accounts.
+                nullable: true
+                type: string
+              message:
+                description: Human readable detail for the current phase.
+                nullable: true
+                type: string
+              networkPassphrase:
+                description: Passphrase every transaction of this network must be signed with.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` this status was computed from.'
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                description: Current lifecycle phase.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deleting
+                nullable: true
+                type: string
+              readyAt:
+                description: RFC 3339 timestamp of the first `Ready` transition. Used for TTL based auto-teardown.
+                nullable: true
+                type: string
+              rootAccount:
+                description: Genesis root account (`G...`) funded with the entire supply at genesis. Derived from the network passphrase.
+                nullable: true
+                type: string
+              rpcUrl:
+                description: Cluster-internal Soroban RPC URL, e.g. `http://pr-1234-rpc.<ns>.svc.cluster.local:8000/rpc`.
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: StellarTestnet
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

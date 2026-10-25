@@ -44,6 +44,16 @@ spec:
           annotations:
             summary: 'Stellar node {{ `${/ $labels.node_name }}` }} ledger close time is high'
             description: 'Ledger close time is {{ `${/ $value }}` }}s, above the {{ .Values.monitoring.prometheusRule.ledgerCloseTimeThresholdSeconds }}s threshold.'
+        - alert: StellarOperatorMemoryLeakGrowth24h
+          expr: (container_memory_working_set_bytes{container="stellar-operator"} - container_memory_working_set_bytes{container="stellar-operator"} offset 24h) / container_memory_working_set_bytes{container="stellar-operator"} offset 24h > 0.20
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Stellar operator memory footprint grew by >20% over 24h"
+            description: "Operator container memory footprint on {{ `${/ $labels.pod }}` }} has increased by {{ `${/ $value | humanizePercentage }}` }} over a 24-hour window, indicating a possible logical memory leak."
+            runbook_url: "https://docs.stellar.org/operations/profiling-runbook"
         {{- with .Values.monitoring.prometheusRule.additionalRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -1,5 +1,15 @@
 // Copyright 2024 Stellar-K8s Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Mutating Admission Webhook — WASM Bytecode Optimizer
 //!
 //! This module implements the Kubernetes MutatingAdmissionWebhook handler that
@@ -185,7 +195,7 @@ pub struct AdmissionStatus {
 /// ```ignore
 /// router.route("/mutate/wasm", post(wasm_mutate_handler))
 /// ```
-#[instrument(skip(state, review), fields(uid = tracing::field::Empty))]
+
 pub async fn wasm_mutate_handler(
     State(state): State<Arc<WasmMutatorState>>,
     Json(review): Json<AdmissionReview>,
@@ -407,6 +417,14 @@ fn escape_json_pointer(s: &str) -> String {
 }
 
 /// Build a minimal allow `AdmissionReview` with optional warnings.
+///
+/// Public fail-open alias used by other webhook handlers that must never
+/// block a deploy — see [`crate::webhook::vault_injector`].
+pub fn fail_open(uid: &str, warnings: Vec<String>) -> AdmissionReview {
+    allow_review(uid, warnings)
+}
+
+/// Build a minimal allow `AdmissionReview` with optional warnings.
 fn allow_review(uid: &str, warnings: Vec<String>) -> AdmissionReview {
     AdmissionReview {
         api_version: "admission.k8s.io/v1".to_string(),
@@ -428,7 +446,7 @@ fn allow_review(uid: &str, warnings: Vec<String>) -> AdmissionReview {
 }
 
 /// Build a deny `AdmissionReview` with an error message.
-fn error_review(uid: &str, message: &str) -> AdmissionReview {
+pub fn error_review(uid: &str, message: &str) -> AdmissionReview {
     AdmissionReview {
         api_version: "admission.k8s.io/v1".to_string(),
         kind: "AdmissionReview".to_string(),

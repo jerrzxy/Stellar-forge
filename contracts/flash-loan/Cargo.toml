@@ -10,6 +10,10 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 doctest = false
 
+[[bench]]
+name = "flash_loan_bench"
+harness = false
+
 [dependencies]
 soroban-sdk = { version = "=27.0.6", features = ["alloc"] }
 

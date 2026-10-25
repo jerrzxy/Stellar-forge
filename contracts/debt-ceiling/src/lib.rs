@@ -1,11 +1,14 @@
-#![no_std]
-
-//! Multi-collateral stablecoin debt ceiling controller.
+//! Multi-Collateral Stablecoin Debt Ceiling Controller
 //!
-//! This crate exposes the public contract interface for managing per-collateral
-//! debt ceilings and enforcing those ceilings during minting operations. The
-//! heavy lifting (storage layout, authorization, and accounting) lives in the
-//! [`controller`] module; this entry point wires the contract interface to it.
+//! This crate provides a Soroban contract that tracks the total outstanding
+//! debt minted per collateral type and enforces per-collateral debt ceilings.
+//!
+//! The contract exposes administrative functions to configure ceilings and
+//! governance functions that are time-locked. Minting engines call into the
+//! controller to enforce blocking checks before issuing new debt.
+
+#![no_std]
+#![allow(clippy::module_name_repetitions)]
 
 use soroban_sdk::{contract, contractimpl, Address, Env};
 

@@ -2,18 +2,22 @@
 name = "controller"
 version = "0.1.0"
 edition = "2021"
-description = "Stellar-K8s controller: deployment pipeline and admission webhook modules"
+description = "Stellar-K8s controller: deployment pipeline, admission webhook and ephemeral testnet operator modules"
 license = "Apache-2.0"
 
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# HTTP client for sidecar communication
+# HTTP client for sidecar communication and cloud provider API calls
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls-manual-roots",
+    "rustls-tls",
 ] }
+
+# Async traits (used by CloudVolumeVerifier and KubeClient)
+async-trait = "0.1"
 
 # HTTP server (sidecar + axum handler)
 axum = { version = "0.8", features = [] }
@@ -37,6 +41,21 @@ async-trait = "0.1"
 
 # Temporary files for wasm-opt subprocess I/O
 tempfile = "3"
+
+# StellarTestnet operator (issue #246): CRD, reconcile loop and key derivation
+kube = { version = "1", default-features = false, features = ["runtime", "derive", "client", "rustls-tls"] }
+k8s-openapi = { version = "0.25", default-features = false, features = ["v1_30"] }
+schemars = "0.8"
+serde_yaml = "0.9"
+futures = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[[bin]]
+name = "stellar-testnet-operator"
+path = "src/bin/stellar-testnet-operator.rs"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

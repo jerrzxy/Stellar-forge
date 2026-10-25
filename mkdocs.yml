@@ -143,6 +143,7 @@ nav:
     - Security Compliance Guide: security/compliance-guide.md
     - Container Image Security: container-image-security.md
     - Credentials & Secrets: security/credentials-and-secrets.md
+    - Vault Seed Injection Webhook: security/vault-webhook-injection.md
     - Key Sharding & Seed Custody: security/key-sharding.md
     - Pod Security Standards: security/pss.md
     - Automated Dependency Updates: security/dependency-updates.md

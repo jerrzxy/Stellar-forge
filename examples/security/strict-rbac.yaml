@@ -1,0 +1,374 @@
+# Strict least-privilege RBAC for Stellar-K8s.
+#
+# Assumptions:
+#   operator namespace : stellar-system
+#   managed namespace  : stellar
+#   operator SA        : stellar-operator
+#   operator binary    : stellar-k8s run --namespace=stellar-system --watch-namespace=stellar
+#
+# Apply with:
+#   kubectl apply -f examples/security/strict-rbac.yaml
+#
+# Validate with:
+#   bash examples/security/audit-rbac.sh
+#
+# See docs/security/rbac-hardening.md for the full permission rationale.
+
+# ─── 1. ServiceAccount ────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stellar-operator
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: controller
+  annotations:
+    # Remove or replace this annotation if you are not using IRSA.
+    # When using IRSA, this SA must NOT also be used for ESO; give ESO its own SA.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/stellar-operator
+    description: "Stellar-K8s operator ServiceAccount — never share with workload pods"
+automountServiceAccountToken: false  # the operator mounts its own projected token
+
+---
+# ─── 2. Role: managed workload namespace ─────────────────────────────────────
+#
+# Grants the minimum write access the reconciler needs inside "stellar".
+# No Secret mutation. No RBAC writes. No pods/exec or pods/attach.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stellar-operator
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+rules:
+  # ── Stellar CRDs ────────────────────────────────────────────────────────────
+  - apiGroups: ["stellar.org"]
+    resources:
+      - stellarnodes
+      - stellarbenchmarks
+      - benchmarkreports
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["stellar.org"]
+    resources:
+      - stellarnodes/status
+      - stellarbenchmarks/status
+      - benchmarkreports/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["stellar.org"]
+    resources:
+      - stellarnodes/finalizers
+      - stellarbenchmarks/finalizers
+    verbs: ["update"]
+
+  # ── Workload resources ───────────────────────────────────────────────────────
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ── Core resources ───────────────────────────────────────────────────────────
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["get", "update", "patch"]  # forensic-snapshot only — remove if break-glass is prohibited
+
+  # ── Secrets: READ-ONLY — the operator never writes to Secrets ────────────────
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Networking ───────────────────────────────────────────────────────────────
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ── Availability ─────────────────────────────────────────────────────────────
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources: ["verticalpodautoscalers"]
+    verbs: ["get", "patch", "delete"]
+
+  # ── External Secrets Operator ────────────────────────────────────────────────
+  # The operator only applies/reads the ExternalSecret object. ESO writes
+  # the target Kubernetes Secret under its own ServiceAccount.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "patch"]
+
+  # ── CloudNativePG (optional — remove if CNPG is not used) ───────────────────
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "poolers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ── Events ───────────────────────────────────────────────────────────────────
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stellar-operator
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stellar-operator
+subjects:
+  - kind: ServiceAccount
+    name: stellar-operator
+    namespace: stellar-system
+
+---
+# ─── 3. Role: operator namespace (stellar-system) ────────────────────────────
+#
+# Minimum needed for in-process lifecycle: preflight, feature-flag watch,
+# leader election, and peer-discovery publication.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stellar-operator-self
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stellar-operator-self
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stellar-operator-self
+subjects:
+  - kind: ServiceAccount
+    name: stellar-operator
+    namespace: stellar-system
+
+---
+# ─── 4. ClusterRole: read-only cross-namespace observer ──────────────────────
+#
+# Required by stock binary paths that ignore --watch-namespace:
+#   • startup preflight lists all StellarNodes
+#   • PeerDiscoveryManager lists all StellarNodes + Service lookup
+#   • benchmark controller watches all StellarBenchmarks + Pods
+#   • snapshot worker lists all StellarNodes periodically
+#
+# This ClusterRole grants ONLY the reads forced by those paths. It does NOT
+# grant cluster-wide benchmark writes, Secret reads, or workload creation.
+# See docs/security/rbac-hardening.md for the full architectural explanation.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellar-operator-observer
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["stellar.org"]
+    resources: ["stellarnodes"]
+    verbs: ["list"]
+  - apiGroups: ["stellar.org"]
+    resources: ["stellarbenchmarks"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stellar-operator-observer
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stellar-operator-observer
+subjects:
+  - kind: ServiceAccount
+    name: stellar-operator
+    namespace: stellar-system
+
+---
+# ─── 5. ClusterRole: named namespace and StorageClass access ─────────────────
+#
+# Namespace get: preflight reads the operator namespace; pss.rs reads and
+# patches the managed namespace label. The resource names are pinned so the
+# operator cannot read arbitrary namespace metadata.
+#
+# StorageClass get: local-storage auto-detection probes exactly two names.
+# Remove this block if all nodes set spec.storage.storageClass explicitly.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellar-operator-named-resources
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["stellar-system", "stellar"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["stellar"]
+    verbs: ["patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    resourceNames: ["local-path", "local-storage"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stellar-operator-named-resources
+  labels:
+    app.kubernetes.io/name: stellar-operator
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stellar-operator-named-resources
+subjects:
+  - kind: ServiceAccount
+    name: stellar-operator
+    namespace: stellar-system
+
+---
+# ─── 6. Namespace PSS labels ─────────────────────────────────────────────────
+#
+# "stellar" workload namespace: enforce restricted to harden node pods.
+# "stellar-system" operator namespace: audit/warn only because the Helm chart
+#  currently does not satisfy every field required by restricted enforcement.
+#
+# Apply labels manually or via a Kyverno/Gatekeeper policy.
+# Do not rely on the operator to set its own namespace labels.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stellar
+  labels:
+    # Pod Security Admission — enforce restricted for workload pods
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    # Network isolation label used by NetworkPolicy selectors
+    stellar.org/node-namespace: "true"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stellar-system
+  labels:
+    # Operator namespace: audit and warn only (chart is not yet restricted-compliant)
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+
+---
+# ─── 7. Validator workload ServiceAccount ────────────────────────────────────
+#
+# Separate SA for the actual validator/horizon/soroban pods managed by the
+# operator. This SA must NOT be the same as stellar-operator; it is what Vault
+# and ESO bind their Kubernetes auth roles to.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stellar-node
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-node
+    app.kubernetes.io/component: workload
+  annotations:
+    description: "Workload ServiceAccount for Validator/Horizon/Soroban pods. Bind Vault/ESO roles to this SA, NOT to stellar-operator."
+automountServiceAccountToken: false  # operator mounts tokens explicitly when needed
+
+---
+# ─── 8. Workload minimal Role ─────────────────────────────────────────────────
+#
+# Validator, Horizon, and Soroban RPC pods need no Kubernetes API access in
+# normal operation. This role is intentionally empty for node workloads.
+# It exists only to make the subject explicit and auditable.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stellar-node-workload
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-node
+    app.kubernetes.io/component: rbac
+rules: []  # No API access for workload pods — principle of least privilege
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stellar-node-workload
+  namespace: stellar
+  labels:
+    app.kubernetes.io/name: stellar-node
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stellar-node-workload
+subjects:
+  - kind: ServiceAccount
+    name: stellar-node
+    namespace: stellar

@@ -1,0 +1,58 @@
+# Copyright 2024 Stellar-K8s Contributors
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# An ephemeral, single-node Stellar network for CI jobs.
+#
+#   kubectl apply -f controller/examples/stellartestnet.yaml -n stellar-ci
+#   kubectl get stellartestnet -n stellar-ci   # Phase turns Ready in <30s
+#
+# Everything created for this resource (the quickstart Deployment, the
+# <name>-rpc and <name>-core Services, the optional Ingress) carries an
+# owner reference back to it: deleting the resource garbage-collects the
+# whole network, and the operator's finalizer sweeps anything the owner
+# reference mechanism misses.
+apiVersion: stellar.org/v1alpha1
+kind: StellarTestnet
+metadata:
+  name: pr-246
+spec:
+  genesis:
+    # Signed into every transaction of this network. Defaults to the
+    # standalone quickstart passphrase when omitted.
+    networkPassphrase: "Standalone Network ; February 2017"
+    # `memory` keeps every Core/RPC database on RAM-backed emptyDir volumes
+    # so a deleted testnet leaves nothing behind. `disk` is also ephemeral.
+    storage: memory
+    # Ledger protocol the node upgrades to on start. Pinned because the
+    # quickstart image's default can lag the Soroban host its RPC ships
+    # with, which breaks contract simulation. Omit to use the image default.
+    protocolVersion: 30
+  # Each entry is derived deterministically (from passphrase, namespace,
+  # resource name and account name) and funded through the network's own
+  # friendbot before the testnet reports Ready. The resulting keypairs are
+  # published in status.accounts.
+  accounts:
+    - name: deployer
+    - name: ci-bot
+  rpc:
+    # Expose the Soroban RPC endpoint outside the cluster (requires an
+    # ingress controller). Off by default; cluster-internal URLs are always
+    # published in status.rpcUrl / status.friendbotUrl.
+    ingress:
+      enabled: false
+      # host: pr-246.stellar.example.com
+      # className: nginx
+  image: stellar/quickstart:latest
+  # CI safety net: tear the whole resource down this many seconds after it
+  # first becomes Ready, even if the job that created it dies first.
+  ttlSecondsAfterReady: 3600

@@ -1,0 +1,30 @@
+[package]
+name = "cdp-engine"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Collateralized Debt Position (CDP) engine — vault tracking, borrowing with collateralisation-ratio enforcement, and keeper-driven liquidation for Stellar Soroban"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "27.0.6", features = ["alloc"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "27.0.6", features = ["testutils", "alloc"] }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+# Standalone Soroban contract workspace; isolated from the root Stellar-forge
+# workspace so that profile settings and toolchain pins do not bleed through.
+[workspace]

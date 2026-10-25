@@ -1,0 +1,108 @@
+.form-level-error {
+    --form-error-background: #fff1f0;
+    --form-error-border: #d92d20;
+    --form-error-foreground: #7a271a;
+    --form-error-button-background: #ffffff;
+    --form-error-button-border: #f1a7a0;
+    --form-error-button-hover: #ffe3e0;
+
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    padding: 12px 14px;
+    color: var(--form-error-foreground);
+    background: var(--form-error-background);
+    border: 1px solid var(--form-error-button-border);
+    border-inline-start: 4px solid var(--form-error-border);
+    border-radius: 4px;
+}
+
+.form-level-error__icon {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    color: #ffffff;
+    background: var(--form-error-border);
+    border-radius: 50%;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.form-level-error__content p {
+    margin: 0;
+}
+
+.form-level-error__title {
+    font-weight: 700;
+}
+
+.form-level-error__message {
+    margin-top: 3px !important;
+    overflow-wrap: anywhere;
+}
+
+.form-level-error__actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.form-level-error__retry,
+.form-level-error__dismiss {
+    color: inherit;
+    background: var(--form-error-button-background);
+    border: 1px solid var(--form-error-button-border);
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.form-level-error__retry {
+    padding: 5px 9px;
+    font-weight: 600;
+}
+
+.form-level-error__dismiss {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.form-level-error__retry:hover,
+.form-level-error__dismiss:hover {
+    background: var(--form-error-button-hover);
+}
+
+.form-level-error__retry:focus-visible,
+.form-level-error__dismiss:focus-visible {
+    outline: 2px solid var(--form-error-border);
+    outline-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+    .form-level-error {
+        --form-error-background: #351b1c;
+        --form-error-border: #ff716b;
+        --form-error-foreground: #ffd7d4;
+        --form-error-button-background: #492426;
+        --form-error-button-border: #884448;
+        --form-error-button-hover: #5b2a2d;
+    }
+}
+
+@media (max-width: 480px) {
+    .form-level-error {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .form-level-error__actions {
+        grid-column: 2;
+        justify-content: flex-start;
+    }
+}

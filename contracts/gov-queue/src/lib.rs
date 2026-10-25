@@ -33,6 +33,8 @@
 mod execution;
 mod types;
 
+pub use types::{GovError, Proposal, ProposalStatus};
+
 #[cfg(test)]
 mod test;
 
@@ -91,6 +93,9 @@ impl GovQueueContract {
         if guardians.is_empty() {
             return Err(GovError::EmptyGuardianSet);
         }
+        if guardian_threshold == 0 || guardian_threshold > guardians.len() {
+            return Err(GovError::InvalidGuardianThreshold);
+        }
 
         admin.require_auth();
 
@@ -128,6 +133,9 @@ impl GovQueueContract {
         Self::require_admin(&env)?;
         if guardians.is_empty() {
             return Err(GovError::EmptyGuardianSet);
+        }
+        if threshold == 0 || threshold > guardians.len() {
+            return Err(GovError::InvalidGuardianThreshold);
         }
         env.storage().persistent().set(&DataKey::Guardians, &guardians);
         env.storage().persistent().set(&DataKey::GuardianThreshold, &threshold);
@@ -306,7 +314,8 @@ impl GovQueueContract {
     /// - `current_ledger >= proposal.earliest_execution_ledger`.
     ///
     /// If the target contract call fails the proposal is marked `Failed` and
-    /// the queue state is preserved intact.
+    /// committed as a terminal state; target-side writes are rolled back by
+    /// Soroban's failed sub-invocation.
     pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), GovError> {
         let mut proposal = load_proposal(&env, proposal_id)?;
 
@@ -335,7 +344,6 @@ impl GovQueueContract {
                     proposal_id,
                 );
                 log!(&env, "proposal {} execution failed; marked Failed", proposal_id);
-                return Err(GovError::ExecutionFailed);
             }
         }
 

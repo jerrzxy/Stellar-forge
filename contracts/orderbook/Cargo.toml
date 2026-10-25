@@ -1,0 +1,24 @@
+[package]
+name = "orderbook"
+version = "0.1.0"
+edition = "2021"
+description = "Decentralized Autonomous Orderbook (Limit Orders) for Soroban"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+soroban-sdk = { version = "21.0.0", features = ["alloc"] }
+
+[library]
+crate-type = ["cdylib"]
+doctest = false
+
+[profile.release]
+opt-level = "z3
+lto = true
+codegen-units = 1
+codegen-lto = true
+panic = "abort"
+overflow-checks = true
+debug = false
+strip = "symbols"

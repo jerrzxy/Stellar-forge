@@ -29,7 +29,14 @@ use crate::types::{GovError, ProposalStatus};
 // ---------------------------------------------------------------------------
 
 mod mock_target {
-    use soroban_sdk::{contract, contractimpl, Bytes, Env};
+    use soroban_sdk::{contract, contracterror, contractimpl, Bytes, Env, Symbol};
+
+    #[contracterror]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[repr(u32)]
+    pub enum MockTargetError {
+        Rejected = 1,
+    }
 
     #[contract]
     pub struct MockTarget;
@@ -37,7 +44,26 @@ mod mock_target {
     #[contractimpl]
     impl MockTarget {
         /// Simulated config-change entry point — simply returns successfully.
-        pub fn apply_config(_env: Env, _calldata: Bytes) {}
+        pub fn apply_config(env: Env, calldata: Bytes) {
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "config"), &calldata);
+        }
+
+        /// Writes before failing to verify failed sub-invocation rollback.
+        pub fn reject_config(
+            env: Env,
+            calldata: Bytes,
+        ) -> Result<(), MockTargetError> {
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "config"), &calldata);
+            Err(MockTargetError::Rejected)
+        }
+
+        pub fn get_config(env: Env) -> Option<Bytes> {
+            env.storage().instance().get(&Symbol::new(&env, "config"))
+        }
     }
 }
 
@@ -101,6 +127,26 @@ fn submit_config_proposal(
     (id, target_id)
 }
 
+fn submit_failing_config_proposal(
+    env: &Env,
+    client: &GovQueueContractClient,
+    proposer: &Address,
+) -> (u64, Address) {
+    let target_id = env.register_contract(None, MockTarget);
+    let calldata = Bytes::from_slice(env, b"rejected_config=99");
+    let desc = Bytes::from_slice(env, b"Rejected configuration change");
+    let id = client
+        .submit_proposal(
+            proposer,
+            &target_id,
+            &Symbol::new(env, "reject_config"),
+            &calldata,
+            &desc,
+        )
+        .unwrap();
+    (id, target_id)
+}
+
 /// Advance the ledger sequence number by `n`.
 fn advance_ledger(env: &Env, n: u32) {
     env.ledger().with_mut(|li| {
@@ -135,6 +181,23 @@ fn test_double_initialize_fails() {
     let guardians = soroban_sdk::vec![&env, g1.clone()];
     let result = client.initialize(&admin, &guardians, &1u32, &50u32, &1u64);
     assert!(result.is_err(), "second initialize must fail");
+}
+
+#[test]
+fn test_initialize_rejects_invalid_guardian_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, GovQueueContract);
+    let client = GovQueueContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let guardians = soroban_sdk::vec![&env, Address::generate(&env)];
+
+    assert_eq!(
+        client.initialize(&admin, &guardians, &2u32, &100u32, &1u64),
+        Err(soroban_sdk::Error::from_contract_error(
+            GovError::InvalidGuardianThreshold as u32
+        ))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +351,7 @@ fn test_execution_blocked_before_delay_elapses() {
     // Set ledger to a known starting point.
     env.ledger().with_mut(|li| li.sequence_number = 1000);
 
-    let (id, _) = submit_config_proposal(&env, &client, &proposer);
+    let (id, target_id) = submit_config_proposal(&env, &client, &proposer);
     cast_yes_votes(&env, &client, id, quorum);
 
     let proposal = client.get_proposal(&id).unwrap();
@@ -322,6 +385,8 @@ fn test_execution_blocked_before_delay_elapses() {
         client.get_proposal_status(&id).unwrap(),
         ProposalStatus::Executed
     );
+    let target_client = MockTargetClient::new(&env, &target_id);
+    assert_eq!(target_client.get_config(), Some(Bytes::from_slice(&env, b"set_param=42")));
 }
 
 #[test]
@@ -596,21 +661,24 @@ fn test_failed_execution_marks_failed_not_corrupted() {
     let proposer = Address::generate(&env);
 
     // Submit two proposals.
-    let (id1, _) = submit_config_proposal(&env, &client, &proposer);
+    let (id1, failing_target_id) = submit_failing_config_proposal(&env, &client, &proposer);
     let (id2, _) = submit_config_proposal(&env, &client, &proposer);
 
     // Queue both.
     cast_yes_votes(&env, &client, id1, 1);
     cast_yes_votes(&env, &client, id2, 1);
 
-    // Execute proposal 1 successfully.
+    // A target writes and then fails. The proposal records failure, while
+    // the target's failed sub-invocation write is rolled back.
     client.execute_proposal(&id1).unwrap();
-    assert_eq!(client.get_proposal_status(&id1).unwrap(), ProposalStatus::Executed);
+    assert_eq!(client.get_proposal_status(&id1).unwrap(), ProposalStatus::Failed);
+    let failing_target = MockTargetClient::new(&env, &failing_target_id);
+    assert_eq!(failing_target.get_config(), None);
 
     // Proposal 2 is still Queued — unaffected.
     assert_eq!(client.get_proposal_status(&id2).unwrap(), ProposalStatus::Queued);
 
-    // Execute proposal 2 — should also succeed with our mock target.
+    // Execute proposal 2 — the neighboring proposal and its target remain usable.
     client.execute_proposal(&id2).unwrap();
     assert_eq!(client.get_proposal_status(&id2).unwrap(), ProposalStatus::Executed);
 }

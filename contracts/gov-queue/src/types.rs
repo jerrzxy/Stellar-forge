@@ -148,6 +148,8 @@ pub enum GovError {
     ExecutionFailed       = 12,
     /// Guardian set is empty (must have at least one).
     EmptyGuardianSet      = 13,
+    /// Guardian signature threshold must be within the guardian set size.
+    InvalidGuardianThreshold = 14,
 }
 
 impl From<GovError> for soroban_sdk::Error {

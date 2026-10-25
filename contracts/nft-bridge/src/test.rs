@@ -13,6 +13,7 @@ const ETHEREUM: u64 = 1;
 struct Setup<'a> {
     env: Env,
     admin: Address,
+    relayer: Address,
     alice: Address,
     client: NftBridgeClient<'a>,
 }
@@ -22,11 +23,13 @@ impl<'a> Setup<'a> {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
+        let relayer = Address::generate(&env);
         let alice = Address::generate(&env);
         let id = env.register(
             NftBridge,
             (
                 admin.clone(),
+                relayer.clone(),
                 String::from_str(&env, "Bridged Punks"),
                 String::from_str(&env, "BPUNK"),
             ),
@@ -35,6 +38,7 @@ impl<'a> Setup<'a> {
         Setup {
             env,
             admin,
+            relayer,
             alice,
             client,
         }
@@ -92,6 +96,10 @@ fn mint_registers_native_token_and_updates_balance() {
             owner: s.alice.clone(),
             origin: Origin::Native,
             status: Status::Active,
+            token_uri: String::from_str(&s.env, ""),
+            source: None,
+            bridge_nonce: None,
+            destination_chain_id: None,
         })
     );
 }
@@ -120,6 +128,7 @@ fn mint_rejects_unauthorised_caller() {
             NftBridge,
             (
                 Address::generate(&env),
+                Address::generate(&env),
                 String::from_str(&env, "N"),
                 String::from_str(&env, "N"),
             ),
@@ -128,6 +137,21 @@ fn mint_rejects_unauthorised_caller() {
     assert!(client
         .try_mint(&Address::generate(&env), &U256::from_u32(&env, 1))
         .is_err());
+}
+
+#[test]
+fn synthetic_mint_requires_configured_relayer_auth() {
+    let s = Setup::new();
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(7),
+        &ETHEREUM,
+        &s.eth_address(),
+        &s.id(55),
+        &BytesN::from_array(&s.env, &[0x11; 32]),
+        &String::from_str(&s.env, "ipfs://metadata"),
+    );
+    assert_eq!(s.env.auths()[0].0, s.relayer);
 }
 
 #[test]
@@ -179,6 +203,164 @@ fn lock_nonces_are_unique_and_increasing() {
     let nonces: std::vec::Vec<u64> = (1..=3).map(|n| s.lock(&s.alice, n)).collect();
     assert_eq!(nonces, [1, 2, 3]);
     assert_eq!(last_lock_event(&s.env).4, 3);
+}
+
+#[test]
+fn native_lock_can_be_unlocked_once_by_the_relayer() {
+    let s = Setup::new();
+    s.client.mint(&s.alice, &s.id(1));
+    let lock_nonce = s.lock(&s.alice, 1);
+    let return_id = BytesN::from_array(&s.env, &[0xCD; 32]);
+
+    s.client.unlock_native(
+        &s.id(1),
+        &lock_nonce,
+        &ETHEREUM,
+        &return_id,
+        &s.alice,
+    );
+
+    let record = s.client.token(&s.id(1)).unwrap();
+    assert_eq!(record.owner, s.alice);
+    assert_eq!(record.status, Status::Active);
+    assert_eq!(record.bridge_nonce, None);
+    assert_eq!(record.destination_chain_id, None);
+    assert_eq!(s.client.balance_of(&s.alice), 1);
+    assert_eq!(s.client.balance_of(&s.client.address), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn native_return_event_id_cannot_be_replayed() {
+    let s = Setup::new();
+    s.client.mint(&s.alice, &s.id(1));
+    let lock_nonce = s.lock(&s.alice, 1);
+    let return_id = BytesN::from_array(&s.env, &[0xCD; 32]);
+    s.client.unlock_native(
+        &s.id(1),
+        &lock_nonce,
+        &ETHEREUM,
+        &return_id,
+        &s.alice,
+    );
+    s.client.unlock_native(
+        &s.id(1),
+        &lock_nonce,
+        &ETHEREUM,
+        &return_id,
+        &s.alice,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn native_unlock_rejects_stale_lock_nonce() {
+    let s = Setup::new();
+    s.client.mint(&s.alice, &s.id(1));
+    s.lock(&s.alice, 1);
+    s.client.unlock_native(
+        &s.id(1),
+        &0,
+        &ETHEREUM,
+        &BytesN::from_array(&s.env, &[0xCD; 32]),
+        &s.alice,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn native_unlock_rejects_wrong_chain() {
+    let s = Setup::new();
+    s.client.mint(&s.alice, &s.id(1));
+    let lock_nonce = s.lock(&s.alice, 1);
+    s.client.unlock_native(
+        &s.id(1),
+        &lock_nonce,
+        &2,
+        &BytesN::from_array(&s.env, &[0xCD; 32]),
+        &s.alice,
+    );
+}
+
+#[test]
+fn synthetic_mint_and_burn_emit_round_trip_data() {
+    let s = Setup::new();
+    let source_contract = s.eth_address();
+    let source_token_id = s.id(55);
+    let deposit_id = BytesN::from_array(&s.env, &[0x11; 32]);
+    let uri = String::from_str(&s.env, "ipfs://metadata");
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(7),
+        &ETHEREUM,
+        &source_contract,
+        &source_token_id,
+        &deposit_id,
+        &uri,
+    );
+
+    let synthetic = s.client.token(&s.id(7)).unwrap();
+    assert_eq!(synthetic.origin, Origin::Synthetic);
+    assert_eq!(synthetic.token_uri, uri);
+    assert_eq!(synthetic.source.unwrap().token_id, source_token_id);
+    assert_eq!(s.client.balance_of(&s.alice), 1);
+
+    let destination = BytesN::from_array(&s.env, &[0xEF; 20]);
+    let nonce = s.client.burn_synthetic(&s.alice, &s.id(7), &destination);
+    assert_eq!(nonce, 1);
+    assert_eq!(s.client.token(&s.id(7)), None);
+    assert_eq!(s.client.balance_of(&s.alice), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn synthetic_mint_rejects_replayed_deposit() {
+    let s = Setup::new();
+    let source_contract = s.eth_address();
+    let deposit_id = BytesN::from_array(&s.env, &[0x11; 32]);
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(7),
+        &ETHEREUM,
+        &source_contract,
+        &s.id(55),
+        &deposit_id,
+        &String::from_str(&s.env, "ipfs://metadata"),
+    );
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(8),
+        &ETHEREUM,
+        &source_contract,
+        &s.id(56),
+        &deposit_id,
+        &String::from_str(&s.env, "ipfs://metadata"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn canonical_source_nft_cannot_be_minted_twice() {
+    let s = Setup::new();
+    let source_contract = s.eth_address();
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(7),
+        &ETHEREUM,
+        &source_contract,
+        &s.id(55),
+        &BytesN::from_array(&s.env, &[0x11; 32]),
+        &String::from_str(&s.env, "ipfs://metadata"),
+    );
+    s.client.mint_synthetic(
+        &s.alice,
+        &s.id(8),
+        &ETHEREUM,
+        &source_contract,
+        &s.id(55),
+        &BytesN::from_array(&s.env, &[0x22; 32]),
+        &String::from_str(&s.env, "ipfs://metadata"),
+    );
 }
 
 #[test]

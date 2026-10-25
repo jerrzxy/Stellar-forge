@@ -8,8 +8,8 @@
     "test": "node --test webgl_renderer/*.test.js",
     "bench": "node webgl_renderer/bench.js",
     "typecheck": "tsc -p tsconfig.json",
-    "dev": "vite demo",
-    "build": "vite build demo"
+    "dev": "node init && vite demo",
+    "build": "node init && vite build demo"
   },
   "dependencies": {
     "d3-force-3d": "^3.0.6",

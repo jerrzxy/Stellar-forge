@@ -41,4 +41,6 @@ pub mod ebpf;
 pub mod exporter;
 pub mod metrics;
 pub mod parser;
+pub mod profiling;
 pub mod proxy;
+pub mod server;

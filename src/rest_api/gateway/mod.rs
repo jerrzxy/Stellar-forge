@@ -21,12 +21,16 @@
 //! - API analytics and usage tracking
 //! - OpenAPI/Swagger documentation
 //! - Developer portal with API explorer
+//! - Multi-region traffic routing with circuit-breaker isolation
+//! - RPC node health checking with ledger sequence alignment
 
 pub mod analytics;
 pub mod auth;
 pub mod developer_portal;
 pub mod distributed_ratelimit;
 pub mod handlers;
+pub mod health;
+pub mod multi_region_router;
 pub mod openapi;
 pub mod plugin;
 pub mod ratelimit;
@@ -48,6 +52,14 @@ pub use distributed_ratelimit::{
     StoreError,
 };
 pub use handlers::{gateway_routes, GatewayStateWrapper};
+pub use health::{
+    ClusterEndpoint, ClusterHealthChecker, ClusterHealthStatus, HealthCheckerConfig,
+    HealthEvaluation, HealthSnapshot, DEFAULT_MAX_LEDGER_LAG,
+};
+pub use multi_region_router::{
+    build_router, BreakerState, CircuitBreakerConfig, MultiRegionRouter, MultiRegionRouterConfig,
+    RoutingDecision, RoutingError, RouterStats,
+};
 pub use openapi::{get_default_routes, ApiRoute, OpenApiDocument, OpenApiGenerator};
 pub use plugin::{GatewayPlugin, PluginContext, PluginHook, PluginManager};
 pub use ratelimit::{QuotaConfig, QuotaManager, QuotaTier, RateLimitConfig, RateLimiter};

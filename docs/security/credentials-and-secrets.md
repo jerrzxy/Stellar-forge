@@ -89,3 +89,4 @@ Stellar-K8s supports multiple strategies for managing sensitive credentials, fro
 - [Gatekeeper Policies](../gatekeeper-policies.md)
 - [Image Pinning](../image-pinning.md)
 - [Key Sharding & Seed Custody](key-sharding.md)
+- [Vault Seed Injection Webhook](vault-webhook-injection.md)

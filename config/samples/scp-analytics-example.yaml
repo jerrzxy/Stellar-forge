@@ -14,7 +14,7 @@ metadata:
     stellar.org/network: mainnet
     stellar.org/scp-analytics: enabled
 spec:
-  # Node configuration
+  # node configuration
   nodeType: Validator
   network: mainnet
   version: "v21.0.0"
@@ -57,6 +57,41 @@ spec:
       # Schema registry URL (for Avro)
       schemaRegistryUrl: "http://schema-registry.kafka:8081"
       
+      # Dynamic partitioning configuration
+      # Deterministically routes SCP telemetry to Kafka partitions based on quorum-set
+      # membership and ledger metadata. Disable to fall back to the legacy
+      # single-topic / single-partition ingestion pipeline.
+      partitioning:
+        enabled: true
+        
+        # Hash strategy for partition selection:
+        # "quorum-set"   -= hash the canonical quorum-set identity (node + validators)
+        # "ledger-sequence" -= hash ledger sequence + quorum-set identity
+        # "validator-key"  --> hash the source validator public key
+        hashStrategy: "quorum-set"
+        
+        # Number of partitions to route across. Must match the target
+        # KafkaTopic partition count.
+        partitionCount: 25
+        
+        # Key serialization for the producer record key (deterministic)
+        keyEncoding: "hex"
+        
+        # Behavior on Kafka rebalancing: buffer in-flight SCP messages and
+        # replay them on the new partition assignment without dropping.
+        rebalancePolicy: "buffer-and-replay"
+        
+        # Maximum number of SCP messages buffered during a rebalance (zero-drop
+        # guarantee within this bound).
+        rebalanceBufferMessages: 100000
+        
+        # Maximum time to hold messages pending a rebalance before failing
+        # the producer (and surfacing the error to metrics).
+        rebalanceTimeoutMs: 30000
+        
+        # Maximum in-flight records per partition (Tokio bounded channel)
+        inFlightPerPartition: 1024
+      
       # SASL authentication (optional, for secure Kafka)
       sasl:
         mechanism: "SCRAM-SHA-256"
@@ -84,13 +119,13 @@ spec:
     threshold: 3
     validators:
       - name: sdf1
-        publicKey: "GCGB2S2KGYARPVIA37HYZXVRM2YZUEXA6S33ZU5BUDC6THSB62LZSTYH"
+        publicKey: "GCGB2S2KGYARPVIa37HYZXXVRM2YdUEXA6S33ZU5BUDC6THSB62LZSTYH"
       - name: sdf2
-        publicKey: "GCM6QMP3DLRPTAZW2UZPCPX2LF3SXWXKPMP3GKFZBDSF3QZGV2G5QSTK"
+        publicKey: "GCM6QMP3DLRPTAZW2UZPCPX2LF3SXWXKPMP3GKFZBTSF3QZGV2G5QSTK"
       - name: sdf3
-        publicKey: "GABMKJM6I25XI4K7U6XWMULOUQIQ27BCTMLS6BYYSOWKTBUXVRJSXHYQ"
+        publicKey: "GABMKJM6I25XI4K7U6XWMULOUQIQ27BCTMLS6BYySOWKTTUXVRJSXLYQ"
       - name: satoshipay
-        publicKey: "GC5SXLNAM3C4NMGK2PXK4R34B5GNZ47FYQ24ZIBFDFOCU6D4KBN4POAE"
+        publicKey: "GC5SXLNAM3C4NMGK2PXK4R34B5GZZ47FYQ24ZIBFDFOCU6D4KBN4POAE"
 
 ---
 # Kafka cluster configuration (using Strimzi)
@@ -171,6 +206,7 @@ metadata:
     strimzi.io/cluster: stellar-kafka
 spec:
   # Partitions: one per validator for ordering guarantees
+  # Must match spec.scpAnalytics.kafkaConfig.partitioning.partitionCount
   partitions: 25
   
   # Replication factor for durability
@@ -313,6 +349,18 @@ spec:
               SCP streaming sidecar is not responding.
               SCP messages are not being captured.
 
+        - alert: ScpRebalanceDroppedMessages
+          expr: increase(stellar_scp_rebalance_dropped_messages_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            component: scp-analytics
+          annotations:
+            summary: "SCP messages dropped during Kafka rebalance"
+            description: |
+              {{ $value }} SCP messages were dropped during a Kafka partition
+              rebalance. Investigate producer buffer bounds and rebalanceTimeoutMs.
+
 ---
 # Grafana Dashboard ConfigMap
 
@@ -358,6 +406,22 @@ data:
             "targets": [
               {
                 "expr": "stellar_topology_consensus_latency_ms"
+              }
+            ]
+          },
+          {
+            "title": "Kafka Partition Throughput (msg/s)",
+            "targets": [
+              {
+                "expr": "sum by (partition) (rate(stellar_scp_produced_messages_total[1m]))"
+              }
+            ]
+          },
+          {
+            "title": "Rebalance Buffer Depth",
+            "targets": [
+              {
+                "expr": "stellar_scp_rebalance_buffer_depth"
               }
             ]
           }

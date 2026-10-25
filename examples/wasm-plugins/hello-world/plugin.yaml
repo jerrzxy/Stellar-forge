@@ -1,0 +1,24 @@
+apiVersion: stellar.stellar.org/v1alpha1
+kind: ValidationPlugin
+metadata:
+  name: hello-world
+  namespace: stellar-operator-system
+spec:
+  # Human-readable description of what this plugin enforces.
+  description: "Example validation plugin: requires a cost-center label and at least 3 replicas for Mainnet nodes."
+  # Operations this plugin is invoked for. DELETE/CONNECT are passed through by the runtime.
+  operations:
+    - CREATE
+    - UPDATE
+  # Path to the compiled Wasm module inside the ConfigMap mounted at /plugins.
+  wasmModule: /plugins/hello-world.wasm
+  # Maximum allowed execution time in milliseconds.
+  timeoutMs: 500
+  # Maximum allowed linear memory in MiB.
+  memoryLimitMiB: 25
+  # Fail closed: deny the request if the plugin panics or times out.
+  failUrePolicy: Deny
+  # Optional label selector restricting which StellarNodes this plugin evaluates.
+  selector:
+    matchLabels:
+      app.kubernetes.io/managed-by: stellar-operator

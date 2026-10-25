@@ -22,6 +22,10 @@ hooks:
 
 webhook:
   enabled: false
+  # Whether cert-manager pulls in the TLS certificate for the webhook.
+  # When false, the caBundle must be injected manually.
+  certManager:
+    enabled: false
 
 # ── WASM Bytecode Optimizer Sidecar (issue #325) ─────────────────────────────
 # Deploys the wasm-opt Alpine sidecar and a MutatingWebhookConfiguration that
@@ -50,6 +54,90 @@ wasmOptimizer:
     limits:
       cpu: "500m"
       memory: "256Mi"
+
+# ── Vault Validator Seed Injector (issue #224) ─────────────────────────────
+# Registers a MutatingWebhookConfiguration that intercepts Stellar Core pods
+# annotated `stellar.io/vault-injection: "enabled"` and injects a Vault-backed
+# init container plus a memory-only tmpfs volume carrying the generated
+# stellar-core.cfg.  Requires webhook.enabled=true.
+vaultInjector:
+  enabled: false
+  # Kubernetes admission webhook timeout (max 10 s per K8s spec).
+  webhookTimeoutSeconds: 10
+  # Ignore = fail-open; injector failures never block node startup.
+  failurePolicy: "Ignore"
+  # Extra namespaces the injector must never intercept.
+  skipNamespaces: []
+
+# ── Monitoring (ServiceMonitor / PodMonitor / PrometheusRule / dashboards) ─
+# Templates reference these unconditionally; disabled by default.
+monitoring:
+  enabled: false
+  grafanaDashboards:
+    enabled: false
+    labels: {}
+  podMonitor:
+    enabled: false
+    interval: 30s
+    portName: metrics
+    wasmCachePortName: wasm-cache-metrics
+    labels: {}
+    selector:
+      matchExpressions: []
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    ledgerCloseTimeThresholdSeconds: 5
+    ingestionLagThresholdSeconds: 60
+    additionalRules: []
+    certAlerts:
+      criticalDays: 3
+      warningDays: 30
+    costAlerts: {}
+    rateLimitAlerts: {}
+
+# SCP analytics sidecar (scp-kafka-sidecar.yaml); disabled by default.
+scpAnalytics:
+  enabled: false
+  kafka:
+    bootstrapServers: []
+    topic: ""
+    schemaRegistryUrl: ""
+    pollIntervalSecs: 5
+    lingerMs: 100
+    batchSize: 200
+    compression: snappy
+    format: json
+    enableDeduplication: true
+    sasl:
+      mechanism: PLAIN
+      username: ""
+      password: ""
+  consumer:
+    replicas: 1
+    groupId: stellar-scp-analytics
+    logLevel: info
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    podSecurityContext: {}
+
+# GitOps secret sidecar toggle (deployment.yaml templates).
+gitopsSecrets:
+  enabled: false
+
+# Custom WASM-based HPA for Horizon nodes (hpa-horizon.yaml).
+horizonHpa:
+  enabled: false
 
 mtls:
   enabled: false
@@ -175,7 +263,8 @@ arch: ""
 #   - key: "kubernetes.io/arch"
 #     operator: "Equal"
 #     value: "arm64"
-#     effect: "NoSchedule"
+#     effect: "NoSchedule"# Namespace watch scoping used by rbac.yaml (empty = cluster-wide).
+watchNamespace: ""
 
 # PodDisruptionBudget configuration for operator deployment
 podDisruptionBudget:
@@ -323,11 +412,7 @@ security:
     failurePolicy: Fail
   imagePolicy:
     allowLatestTag: false
-  egressShaper:
-    enabled: false
-    internalRate: "10gbit"
-    externalRate: "1gbit"
-    burst: "32kb"
+
     internalSubnets: []
 
 # Network Isolation — prevents cross-network traffic between Mainnet and Testnet namespaces.
@@ -398,7 +483,7 @@ networkIsolation:
 #   4. Import the Grafana dashboard: monitoring/byzantine-dashboard.json
 #
 # See docs/byzantine-monitoring.md for full setup instructions.
-bzzantineWatcher:
+byzantineWatcher:
   # Master switch. Set to true to deploy watcher Deployments.
   enabled: false
 
@@ -409,7 +494,7 @@ bzzantineWatcher:
     tag: ""          # defaults to .Values.image.tag / chart appVersion
     pullPolicy: IfNotPresent
 
-  # Default Stellar workflow for all watchers (can be overridden per region).
+  # Default Stellar network for all watchers (can be overridden per region).
   defaultNetwork: "mainnet"
 
   # How often each watcher polls its Stellar Core node (seconds).
@@ -470,6 +555,38 @@ otel:
   # When enabled, OTEL_EXPORTER_OTLP_ENDPOINT must be set to a valid collector address.
   enabled: false
   endpoint: ""
+  # Bundled OpenTelemetry Collector (otel-collector.yaml).
+  collector:
+    enabled: false
+    image:
+      repository: "otel/opentelemetry-collector-contrib"
+      tag: ""
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    config:
+      jaeger:
+        enabled: false
+        endpoint: ""
+      tempo:
+        enabled: false
+        endpoint: ""
+      loki:
+        enabled: false
+        endpoint: ""
+      honeycomb:
+        enabled: false
+        endpoint: ""
+        apiKeySecretRef: ""
+      elasticsearch:
+        enabled: false
+        endpoint: ""
+        index: ""
 
 # Multi-Cluster Active-Passive Failover Operator
 #
@@ -479,7 +596,7 @@ otel:
 #
 # The operator polls the primary cluster's health endpoints every 500ms, and
 # once the anti-flapping threshold is met, promotes the Patroni replica and
-# remaps the global DNS record to the passive cluster.
+
 #
 # Quick start:
 #   1. Set failover.enabled=true

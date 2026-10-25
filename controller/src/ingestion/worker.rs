@@ -290,7 +290,7 @@ async fn run_worker<P: LedgerProcessor>(
     processor: Arc<P>,
     counters: Arc<WorkerCounters>,
 ) {
-    debug!(worker_id = id, "worker starting");
+    info!(worker_id = id, "worker starting");
     let mut frames_this_batch = 0u64;
 
     loop {

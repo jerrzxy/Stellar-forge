@@ -52,10 +52,10 @@
 //! at 100 % it is 3.0×.  All arithmetic uses checked operations and
 //! returns [`Error::ArithmeticOverflow`] on any overflow.
 
-use soroban_sdk::{Address, Bytes, Env, IntoVal, Symbol};
+use soroban_sdk::{Address, Bytes, Env, Symbol};
 use soroban_sdk::token::Client as TokenClient;
 
-use crate::{DataKey, Error, FlashLoanPool};
+use crate::{receiver::FlashLoanReceiverClient, DataKey, Error, FlashLoanPool};
 
 // ---------------------------------------------------------------------------
 // Public entry-point
@@ -139,20 +139,9 @@ pub(crate) fn execute_flash_loan(
     // 6. Transfer funds to receiver.
     tc.transfer(&contract_addr, &receiver, &amount);
 
-    // 7. Invoke receiver callback.
-    //    Expected function: execute_operation(token: Address, amount: i128, fee: i128, data: Bytes)
-    let args = soroban_sdk::vec![
-        env,
-        token.clone().into_val(env),
-        amount.into_val(env),
-        fee.into_val(env),
-        user_data.into_val(env),
-    ];
-    env.invoke_contract::<()>(
-        &receiver,
-        &Symbol::new(env, "execute_operation"),
-        args,
-    );
+    // 7. Invoke the typed receiver callback.
+    FlashLoanReceiverClient::new(env, &receiver)
+        .execute_operation(&token, &amount, &fee, &user_data);
 
     // 8. Release reentrancy lock immediately after the external call returns.
     env.storage()

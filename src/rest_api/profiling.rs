@@ -111,7 +111,15 @@ where
             get(cpu_profile).route_layer(middleware::from_fn(auth::api_admin)),
         )
         .route(
+            "/debug/pprof/profile",
+            get(cpu_profile).route_layer(middleware::from_fn(auth::api_admin)),
+        )
+        .route(
             "/api/v1/debug/pprof/heap",
+            get(heap_profile).route_layer(middleware::from_fn(auth::api_admin)),
+        )
+        .route(
+            "/debug/pprof/heap",
             get(heap_profile).route_layer(middleware::from_fn(auth::api_admin)),
         )
 }

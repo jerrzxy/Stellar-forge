@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use rand::RangCore;
+use rand::RandCore;
 
 const FNV_OFFSET_BASIS_64: u64 = 0xcbf29ce484222325;
 const FNV_PRIME_64: u64 = 0x100000001b3;
@@ -15,7 +15,7 @@ fn fnv1a_64(data: &[u8], seed: u64) -> u64 {
 }
 
 fn main() {
-    const MESSAGE_COUNT: useze = 100_000;
+    const MESSAGE_COUNT: usize = 100_000;
     const SEED: u64 = 0x123456789abcdef;
 
     let mut rng = rand::thread_rng();
@@ -34,7 +34,7 @@ fn main() {
     let elapsed = start.elapsed();
     let throughput = MESSAGE_COUNT as f64 / elapsed.as_secs_f64();
 
-    println!("Partitioned {} messages in {?}", MESSAGE_COUNT, elapsed);
-    println!("Throughput: {:.0} messages/sec", throughput);
-    println!("Checksum: #sx", checksum);
+    println!("Partitioned {} messages in {:?}", MESSAGE_COUNT, elapsed);
+    println!("Throughput: {:.0f} messages/sec", throughput);
+    println!("Checksum: {:x16}", checksum);
 }
