@@ -129,6 +129,27 @@ async fn main() -> Result<(), Error> {
             // Wait until this pod becomes the leader before starting the operator.
             leader.wait_until_leader().await;
 
+            // Start the key-rotation daemon if enabled. Rotation is staggered
+            // across the cluster so quorum thresholds are never jeopardized.
+            let rotation_handle = match stellar_k8s::security::rotation::start_rotation_daemon(
+                k8s_client.clone(),
+            )
+            .await
+            {
+                Ok(handle) => handle,
+                Err(e) => {
+                    eprintln!("Failed to start key-rotation daemon: {e}");
+                    process::exit(1);
+                }
+            };
+
+            // Initialize the warm WASM sandbox pool with the configured capacity
+            // before serving RPC traffic, so cold-start latencies are avoided.
+            if let Err(e) = stellar_k8s::wasm::sandbox_pool::initialize_global_pool().await {
+                eprintln!("Failed to initialize WASM sandbox pool: {e}");
+                process::exit(1);
+            }
+
             // Run the operator while we hold the lease. If the lease is lost (e.g.,
             // during network partition or pod failure), abort the operator so the pod
             // can restart and another replica can take over.
@@ -139,6 +160,11 @@ async fn main() -> Result<(), Error> {
                     Ok(())
                 }
             }
+            .inspect(|_| {
+                if let Some(handle) = rotation_handle {
+                    handle.shutdown();
+                }
+            })
         }
         Commands::Webhook(webhook_args) => return run_webhook(webhook_args).await,
         Commands::Doctor(doctor_args) => return run_doctor(doctor_args).await,

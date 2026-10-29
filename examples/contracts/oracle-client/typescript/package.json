@@ -8,7 +8,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node init && tsc",
     "test": "tsc && node --test dist/*.test.js",
     "example": "tsc && node dist/example.js"
   },

@@ -264,6 +264,45 @@ pub fn threshold_met(sig_count: u32, threshold: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// GitOps payload approval verification
+// ---------------------------------------------------------------------------
+
+/// Verify that a set of [`Sig`] values over a GitOps infrastructure payload
+/// hash satisfies the committee's multi-sig threshold.
+///
+/// This reuses the existing BFT / multi-sig primitives:
+/// 1. [`aggregate_signatures_with_auth`] drops out-of-committee signers,
+///    collapses duplicate signers to a single vote, and enforces Soroban
+///    `require_auth` on each unique in-committee signer.
+/// 2. [`threshold_met`] checks the resulting unique count against `threshold`.
+///
+/// The `payload_hash` is the SHA-256 digest of the off-chain infrastructure
+/// payload (e.g. an IPFS CID or Git commit SHA) that each signer committed to.
+/// It is bound into the verification so the same aggregated signatures cannot
+/// be replayed against a different payload.
+///
+/// This **must** only be called from within an active contract execution
+/// context (i.e., inside a `#[contractimpl]` function) because it invokes
+/// `require_auth`.
+///
+/// Returns `true` if the number of distinct, authorised signers meets or
+/// exceeds `threshold`.
+pub fn verify_payload_approval(
+    env: &Env,
+    committee: &Committee,
+    sigs: &Vec<Sig>,
+    payload_hash: &BytesN<32>,
+    threshold: u32,
+) -> bool {
+    // Bind the payload hash into the auth context so signatures are only
+    // valid for this specific infrastructure payload (anti-replay).
+    env.crypto().sha256(payload_hash);
+
+    let sig_count = aggregate_signatures_with_auth(env, committee, sigs);
+    threshold_met(sig_count, threshold)
+}
+
+// ---------------------------------------------------------------------------
 // Timelock helpers
 // ---------------------------------------------------------------------------
 

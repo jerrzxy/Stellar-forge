@@ -25,13 +25,15 @@ axum = { version = "0.8", features = [] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 
 # Base64 encoding/decoding (WASM binary field in StellarNode spec)
 base64 = "0.21"
-
-# Error handling
 anyhow = "1"
 thiserror = "1"
+
+# libc for process signals
+libc = "0.2"
 
 # Logging
 tracing = "0.1"
@@ -42,25 +44,14 @@ async-trait = "0.1"
 # Temporary files for wasm-opt subprocess I/O
 tempfile = "3"
 
-# StellarTestnet operator (issue #246): CRD, reconcile loop and key derivation
-kube = { version = "1", default-features = false, features = ["runtime", "derive", "client", "rustls-tls"] }
-k8s-openapi = { version = "0.25", default-features = false, features = ["v1_30"] }
-schemars = "0.8"
-serde_yaml = "0.9"
-futures = "0.3"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sha2 = "0.10"
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-[[bin]]
-name = "stellar-testnet-operator"
-path = "src/bin/stellar-testnet-operator.rs"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 axum = { version = "0.8", features = [] }
 serde_json = "1"
 base64 = "0.21"
+# Mock HTTP server for exercising the AWS EBS / GCP PD request round-trips
+# without a live cloud. Pinned to match the version used elsewhere in the repo.
+wiremock = "=0.6.5"
 
-[workspace]

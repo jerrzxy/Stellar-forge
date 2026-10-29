@@ -126,6 +126,16 @@ src = [
     "src/error.rs",
 ]
 
+# ── Event Streaming Bridge ────────────────────────────────────────────────────
+[[entry]]
+doc = "docs/event-bridge.md"
+src = [
+    "event-bridge/src/**",
+    "schemas/ledger-event.avsc",
+    "scripts/validate-event-bridge.sh",
+    "config/samples/event-bridge-example.yaml",
+]
+
 # ── Formal Verification ────────────────────────────────────────────────────────
 [[entry]]
 doc = "docs/FORMAL_VERIFICATION.md"

@@ -1,6 +1,3 @@
-# Base Validator StellarNode skeleton.
-# All environment-specific fields are set via Kustomize overlay patches.
-# Do not set network, version, storage sizes, or secrets here.
 apiVersion: stellar.org/v1alpha1
 kind: StellarNode
 metadata:
@@ -9,6 +6,35 @@ metadata:
   annotations:
     # Apply StellarNode CRs after the operator (wave -20) and namespaces (wave 0).
     argocd.argoproj.io/sync-wave: "10"
+    # --- P2P Node Identity & Secrets Rotation (see #290) ---
+    # The seed referenced by spec.validatorConfig.seedSecretRef is produced by the
+    # External Secrets Operator (ESO) from AWS Secrets Manager or HashiCorp Vault.
+    # The operator watches this secret and performs a staggered, quorum-safe
+    # rotation (un-peer -> inject new seed -> rejoin) across the cluster.
+    #
+    # Rotation policy (30-day default). Set on the StellarNode CR via
+    # spec.validatorConfig.rotationPolicy; documented here for overlay authors:
+    #   spec:
+    #     validatorConfig:
+    #       rotationPolicy:
+    #         enabled: true
+    #         interval: "720h"          # 30 days
+    #         staggerDelay: "5m"        # delay between nodes in the cluster
+    #         maxConcurrentRotations: 1 # never rotate more than one node at a time
+    #         drainTimeout: "10m"       # time to gracefully un-peer before restart
+    #         updateHorizon: true       # propagate rotated keys to ingestion workers
+    #
+    # ESO source reference (managed by the ESO ExternalSecret, not this CR):
+    #   external-secrets.io/v1beta1 ExternalSecret -> Secret "validator-seed"
+    #   refreshInterval: "1h"
+    #   dataFrom: AWS Secrets Manager / HashiCorp Vault path for ed25519 identity
+    #
+    # Transit pathway: ESO -> Kubernetes Secret -> projected volume mounted into
+    # the pod (never written to disk or logs). See controller/src/security/
+    # eso_integration.rs and controller/src/security/rotation.rs.
+    stellar.org/rotation-policy: "30d"
+    stellar.org/rotation-stagger: "5m"
+    stellar.org/eso-secret-store: "aws-secrets-manager"
 spec:
   nodeType: Validator
   # network, version, and environment-specific overrides are applied by overlays.
@@ -29,5 +55,17 @@ spec:
     size: "100Gi"
     retentionPolicy: Delete
   validatorConfig:
+    # Points at the ESO-managed Secret (ExternalSecret target). The operator
+    # reads the ed25519 seed from this secret and rotates it on the schedule
+    # defined by spec.validatorConfig.rotationPolicy (see annotations above).
     seedSecretRef: "validator-seed"
     enableHistoryArchive: true
+    # Rotation policy for the validator node identity. Defaults to a 30-day
+    # interval with staggered, quorum-safe rollouts across the cluster.
+    rotationPolicy:
+      enabled: true
+      interval: "720h"
+      staggerDelay: "5m"
+      maxConcurrentRotations: 1
+      drainTimeout: "10m"
+      updateHorizon: true

@@ -611,3 +611,104 @@ and mutate/validate parity without a live Kubernetes API server.
 ---
 
 *Last verified: 2026-07-29 (webhook payload contract tests #1152; TODO exemption hygiene).*
+
+
+---
+
+## Controller-Crate Implementation (Issue #303)
+
+The admission webhook engine is implemented in the `controller` crate under
+`controller/src/webhook/`.  This section documents the internal design for
+operators and contributors.
+
+### Modules
+
+| Module | Purpose |
+|--------|---------|
+| `controller::webhook::wasm_runner` | Sandboxed Wasmtime execution engine |
+| `controller::webhook::admission`   | AdmissionReview HTTP server (validate + mutate) |
+| `controller::tls`                  | Self-signed cert generation for dev/CI |
+
+### Security Constraints
+
+Every plugin execution is bounded by three independent limits:
+
+| Constraint | Default | Purpose |
+|------------|---------|---------|
+| Fuel | 5 000 000 instructions | Prevents CPU-exhausting loops |
+| Memory | 4 MiB | Bounds guest heap growth |
+| Wall-clock | 9 seconds | Guarantees response before K8s 10s timeout |
+
+### Fail-Open vs Fail-Closed
+
+Each plugin carries an independent `fail_open` flag:
+
+```bash
+# Register a fail-closed policy (deny on plugin error):
+curl -sk -X POST https://webhook:8443/plugins \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"registry-policy","wasm_b64":"<BASE64>","fail_open":false}'
+
+# Register a fail-open policy (allow on plugin error):
+curl -sk -X POST https://webhook:8443/plugins \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"audit-logger","wasm_b64":"<BASE64>","fail_open":true}'
+```
+
+### Environment-variable plugin loading
+
+Plugins can be pre-loaded at operator startup:
+
+```bash
+export WASM_POLICY_PLUGIN_PATH=/etc/plugins/registry_policy.wasm:/etc/plugins/quota_check.wasm
+export WASM_POLICY_FAIL_OPEN=false
+stellar-operator webhook --bind 0.0.0.0:8443 --cert-path /tls/tls.crt --key-path /tls/tls.key
+```
+
+### Example: Registry Policy Plugin
+
+The `examples/plugins/registry-policy/` directory contains a Rust WASM plugin
+that enforces approved Docker registry prefixes.  Build and deploy it:
+
+```bash
+# Build
+cargo build --target wasm32-unknown-unknown --release -p registry-policy
+
+# Deploy via kubectl
+kubectl create configmap registry-policy \
+  --from-file=plugin.wasm=target/wasm32-unknown-unknown/release/registry_policy.wasm \
+  -n stellar-system
+
+# Verify rejection of a non-compliant node
+cat <<EOF | kubectl apply -f -
+apiVersion: stellar.org/v1alpha1
+kind: StellarNode
+metadata:
+  name: bad-validator
+  namespace: stellar
+spec:
+  nodeType: Validator
+  network: testnet
+  version: "private.corp.internal/stellar/stellar-core:v21"
+EOF
+# Expected:
+# Error from server: admission webhook denied the request:
+#   image 'private.corp.internal/...' is not from an approved registry.
+```
+
+### Memory Safety Profile
+
+The `WasmRunner` is designed with the following properties to prevent memory
+leaks in the primary operator thread:
+
+- **No shared mutable state** — each `run_plugin` call creates a fresh
+  Wasmtime `Store` that is dropped at the end of the call.
+- **Arc-wrapped engine** — the Cranelift JIT `Engine` is shared read-only
+  across all calls; compiled modules (`CompiledPlugin`) hold an `Arc<Module>`
+  and can be safely cloned.
+- **Input/output buffers** — per-call `Arc<Mutex<Vec<u8>>>` buffers are
+  created fresh each time and dropped when the host-ABI closures go out of
+  scope.
+- **ResourceLimiter** — the `StoreLimiter` refuses memory allocations beyond
+  4 MiB, ensuring a misbehaving plugin cannot grow the host process address
+  space unboundedly.

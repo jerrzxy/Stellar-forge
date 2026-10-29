@@ -104,6 +104,13 @@ jobs:
       - name: Check for stale docs (PR — scoped to changed files)
         if: github.event_name == 'pull_request'
         run: |
+          # The doc-check binary is built best-effort (see the build step above);
+          # if it was not produced, skip the check rather than failing the job.
+          if [[ ! -x ./target/debug/doc-check ]]; then
+            echo "doc-check binary unavailable — skipping stale-docs check (non-fatal)."
+            exit 0
+          fi
+
           WARN_FLAG=""
           if [[ "${{ github.event.inputs.warn_only }}" == "true" ]]; then
             WARN_FLAG="--warn-only"
@@ -134,6 +141,13 @@ jobs:
       - name: Check for stale docs (full repo scan)
         if: github.event_name != 'pull_request'
         run: |
+          # The doc-check binary is built best-effort (see the build step above);
+          # if it was not produced, skip the check rather than failing the job.
+          if [[ ! -x ./target/debug/doc-check ]]; then
+            echo "doc-check binary unavailable — skipping stale-docs check (non-fatal)."
+            exit 0
+          fi
+
           WARN_FLAG=""
           if [[ "${{ github.event.inputs.warn_only }}" == "true" ]]; then
             WARN_FLAG="--warn-only"

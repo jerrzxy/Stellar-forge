@@ -387,6 +387,147 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Off-chain proof generation → on-chain verification round-trip
+    //
+    // Simulates the state-verifier flow: an off-chain relayer builds a Merkle
+    // tree over historical transaction payloads, generates an inclusion proof
+    // for a specific transaction, and submits it to the contract.  The
+    // contract-side verifier must reconstruct the anchored root and accept.
+    // -----------------------------------------------------------------------
+    fn build_offchain_proof(
+        payloads: &[&[u8]],
+        target: usize,
+    ) -> (Hash, MerkleProof) {
+        let (root, levels) = build_tree(payloads);
+        let proof = build_proof(target, &levels);
+        (root, proof)
+    }
+
+    #[test]
+    fn test_offchain_proof_roundtrip_historical_tx() {
+        // Historical transaction payloads (stand-ins for XDR-encoded envelopes).
+        let payloads: Vec<&[u8]> = vec![
+            b"tx:ledger-100:op-0",
+            b"tx:ledger-101:op-1",
+            b"tx:ledger-102:op-2",
+            b"tx:ledger-103:op-3",
+            b"tx:ledger-104:op-4",
+            b"tx:ledger-105:op-5",
+            b"tx:ledger-106:op-6",
+            b"tx:ledger-107:op-7",
+        ];
+
+        // Off-chain: generate a proof for the transaction at index 5.
+        let (anchored_root, proof) = build_offchain_proof(&payloads, 5);
+
+        // On-chain: submit the proof and assert inclusion against the anchor.
+        assert!(
+            verify_proof(&proof, &anchored_root),
+            "off-chain proof for historical tx must validate on-chain"
+        );
+
+        // The proven leaf must equal the hash of the original payload.
+        assert_eq!(proof.leaf, hash_leaf(payloads[5]));
+    }
+
+    #[test]
+    fn test_offchain_proof_rejected_against_wrong_root() {
+        let payloads: Vec<&[u8]> = vec![b"tx:a", b"tx:b", b"tx:c", b"tx:d"];
+        let (_, proof) = build_offchain_proof(&payloads, 2);
+
+        // A different (untrusted) anchor must not accept the proof.
+        let (wrong_root, _) = build_tree(&[b"other:a", b"other:b", b"other:c", b"other:d"]);
+        assert!(!verify_proof(&proof, &wrong_root));
+    }
+
+    #[test]
+    fn test_offchain_multi_proof_roundtrip() {
+        let payloads: Vec<&[u8]> = vec![b"tx:a", b"tx:b", b"tx:c", b"tx:d"];
+        let (root, levels) = build_tree(&payloads);
+
+        // Prove two historical transactions in a single batch submission.
+        let proof = MultiProof {
+            leaves: vec![
+                MultiLeaf { leaf: levels[0][1], index: 1 },
+                MultiLeaf { leaf: levels[0][3], index: 3 },
+            ],
+            siblings: vec![levels[0][0], levels[0][2]],
+            total_leaves: 4,
+        };
+        assert!(verify_multi_proof(&proof, &root));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gas profiling: bound the number of hash operations per verification so
+    // the contract stays under Soroban's per-transaction CPU instruction
+    // ceiling.  Each proof step performs exactly one SHA-256 call, so the
+    // hash-call count is a faithful proxy for CPU cost.
+    // -----------------------------------------------------------------------
+    /// Maximum hash operations permitted for a single-path proof.  A 32-level
+    /// tree (2^32 leaves) needs at most 32 pair hashes; we allow a small
+    /// margin for the leaf hash.  This keeps verification well under the
+    /// Soroban transaction execution ceiling.
+    const MAX_PROOF_HASH_OPS: usize = 33;
+
+    #[test]
+    fn test_gas_profile_single_proof_under_ceiling() {
+        let n = 1024usize;
+        let raw: Vec<Vec<u8>> = (0..n).map(|i| i.to_le_bytes().to_vec()).collect();
+        let refs: Vec<&[u8]> = raw.iter().map(|v| v.as_slice()).collect();
+        let (root, levels) = build_tree(&refs);
+
+        for i in 0..n {
+            let proof = build_proof(i, &levels);
+            // One hash op per proof step (the leaf is supplied, not hashed).
+            let hash_ops = proof.path.len();
+            assert!(
+                hash_ops <= MAX_PROOF_HASH_OPS,
+                "proof for leaf {i} uses {hash_ops} hash ops, exceeds ceiling"
+            );
+            assert!(verify_proof(&proof, &root));
+        }
+    }
+
+    #[test]
+    fn test_gas_profile_multi_proof_under_ceiling() {
+        let n = 1024usize;
+        let raw: Vec<Vec<u8>> = (0..n).map(|i| i.to_le_bytes().to_vec()).collect();
+        let refs: Vec<&[u8]> = raw.iter().map(|v| v.as_slice()).collect();
+        let (root, levels) = build_tree(&refs);
+
+        // Prove a batch of 8 leaves; hash ops are bounded by
+        // (k * log2(n)) + external siblings, which stays far below the ceiling.
+        let k = 8usize;
+        let leaves: Vec<MultiLeaf> = (0..k)
+            .map(|j| MultiLeaf { leaf: levels[0][j], index: j as u64 })
+            .collect();
+        // Siblings for the remaining unproved subtrees at each level.
+        let mut siblings = Vec::new();
+        let mut level = 0usize;
+        let mut covered = k;
+        while covered < n {
+            let base = covered;
+            for j in 0..covered {
+                siblings.push(levels[level][base + j]);
+            }
+            level += 1;
+            covered *= 2;
+        }
+
+        let proof = MultiProof {
+            leaves,
+            siblings,
+            total_leaves: n as u64,
+        };
+        let hash_ops = proof.siblings.len() + k;
+        assert!(
+            hash_ops <= MAX_PROOF_HASH_OPS * 2,
+            "multi-proof uses {hash_ops} hash ops, exceeds ceiling"
+        );
+        assert!(verify_multi_proof(&proof, &root));
+    }
+
+    // -----------------------------------------------------------------------
     // 32-level tree depth benchmark probe
     // -----------------------------------------------------------------------
     #[test]

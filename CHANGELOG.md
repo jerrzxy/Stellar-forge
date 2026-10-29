@@ -5,6 +5,469 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 
+## Chart v2.38.0 (2026-10-28) [minor]
+
+• Merge pull request #522 from supreme2580/feat/captive-core-supervisor
+✨ feat(captive): Captive Core process lifecycle supervisor with failure detection
+• Merge branch 'main' into feat/captive-core-supervisor
+• Merge pull request #444 from ifygreg01-best/feat/ingestion-ring-buffer-75
+✨ feat(ingestion): XDR ledger ring buffer & stream manager (#75)
+• Merge branch 'main' into feat/ingestion-ring-buffer-75
+✨ feat(captive): implement Captive Core process lifecycle supervisor
+✨ feat(ingestion): add XDR ledger ring buffer & stream manager (#75)
+• - controller/src/ingestion/buffer.rs: bounded LedgerBuffer with
+•   three configurable backpressure strategies (Block, DropNewest,
+•   DropOldest), atomic pushed/popped/dropped counters, and
+•   Notify-based producer/consumer wakeup
+• - controller/src/ingestion/worker.rs: LedgerProcessor async trait,
+•   ProducerPool + clonable ProducerHandle, ConsumerPool with N
+•   parallel worker tasks, WorkerPool builder facade, per-worker
+•   WorkerStats and PoolStats snapshots
+• - controller/src/ingestion/mod.rs: StreamManager high-level
+•   coordinator with StreamConfig (capacity, concurrency, strategy)
+• - controller/src/lib.rs: expose pub mod ingestion
+• - controller/Cargo.toml: add async-trait = "0.1" dependency
+• 18 tests across all three modules including a 10 000-frame
+• throughput benchmark validating the 10 000 ledgers/min requirement.
+
+
+## Chart v2.37.0 (2026-10-28) [minor]
+
+• Merge pull request #443 from Chidi-Dev1/feat/snapshot-controller-issue-243
+✨ feat(controller): add ephemeral storage snapshot controller (#243)
+• Merge branch 'main' into feat/snapshot-controller-issue-243
+• Merge branch 'main' into feat/snapshot-controller-issue-243
+✨ feat(controller): add ephemeral storage snapshot controller (#243)
+• Implements the full VolumeSnapshot lifecycle for Stellar validator PVCs
+• to enable near-instant horizontal scaling via storage cloning.
+• Changes:
+• - controller/src/snapshots/cloud_api.rs: SnapshotClient trait with AWS
+•   EBS and GCP Persistent Disk adapters (CreateSnapshot, DescribeSnapshots /
+•   disks.createSnapshot, snapshots.get), MockSnapshotClient for CI
+• - controller/src/snapshots/volume.rs: SnapshotController orchestrating
+•   fsync coordination with Stellar Core (stop-writes / resume-writes),
+•   cloud snapshot creation, ready-state polling, PVC clone spec generation
+•   (with stellar.org/* annotations), and sync verification (5-min deadline)
+• - controller/src/snapshots/mod.rs: module re-exports
+• - controller/src/lib.rs: expose snapshots module
+• - tests/snapshots_integration_test.rs: 15 integration tests covering full
+•   lifecycle, PVC clone spec correctness, concurrent requests, AWS/GCP
+•   client config validation, cloud error propagation, and cloud-provider
+•   display labels
+• All 48 controller unit + integration tests pass. Build is warning-free
+• for the snapshots module.
+• Closes #243
+
+
+## Chart v2.36.0 (2026-10-28) [minor]
+
+• Merge pull request #447 from DanielTobiDev/feat/issue-244-enhancement-real-time-configmap-hot-reloader
+✨ feat: add ConfigMap hot-reloader for core params
+• Merge pull request #639 from Chidi-Dev1/drips/4
+• Add bounded fail-open Wasm caching layer for Soroban RPC state reads
+✨ feat: add fail-open Wasm LRU cache for Soroban RPC state reads
+• Closes #4
+🐛 fix: resolve merge conflicts with base
+• Merge pull request #446 from notoflagosola-wq/feat/issue-242-safe-bucket-pruner
+✨ feat(controller): add safe local bucket pruning
+• Merge branch 'main' into feat/issue-242-safe-bucket-pruner
+• Merge branch 'main' into feat/issue-242-safe-bucket-pruner
+🐛 fix: resolve merge conflicts with base
+🐛 fix: resolve merge conflicts with base
+🐛 fix(ci): resolve failing checks for #447
+✨ feat: ## [Enhancement] Real-Time ConfigMap Hot-Reloader for Core P (#244)
+✨ feat(controller): add safe local bucket pruning
+• Add async local bucket scanning and retention planning with explicit safety snapshots, cooperative reader locks, and dry-run defaults. Document the limits of the current Core/Horizon integration.
+• Closes #242
+• Signed-off-by: ola196 <oladayoshola25@gmail.com>
+• Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+
+## Chart v2.35.0 (2026-10-27) [minor]
+
+• Merge pull request #452 from Akindoyin538/simple/290-318-320-321
+• Fix: 4 issues (#290, #318, #320, #321)
+• Merge branch 'main' into simple/290-318-320-321
+• Merge pull request #459 from Okorie2000-code/feat/automated-storage-snapshot-backup-84
+✨ feat(controller): automated storage snapshot & cloud backup controller
+• Merge branch 'main' into feat/automated-storage-snapshot-backup-84
+• Merge pull request #450 from Obetaebube3/feat/wasm-latency-autoscaling
+✨ feat(autoscaling): HPA driven by Soroban WASM execution p95 latency
+• Merge branch 'main' into feat/wasm-latency-autoscaling
+• Merge pull request #451 from Ukorstack/revert-1-fix/logging-namespace-field-rename-933
+• Revert 1 fix/logging namespace field rename 933
+• Merge pull request #477 from Ukorstack/feat/kafka-event-bridge-issue-292
+✨ feat(event-bridge): Kafka Event Streaming Bridge for Horizon (#292)
+• Merge pull request #512 from Okorie2000-code/feat/topology-spread-enforcer-116
+✨ feat(topology): dynamic node topology spread constraint enforcer (#116)
+• Merge branch 'main' into feat/kafka-event-bridge-issue-292
+• Merge branch 'main' into feat/kafka-event-bridge-issue-292
+• Merge branch 'main' into feat/topology-spread-enforcer-116
+• Merge branch 'main' into feat/automated-storage-snapshot-backup-84
+✨ feat(topology): add dynamic topology spread constraint enforcer (#116)
+• Implements a mutating controller that inspects cluster node availability-zone
+• labels and injects topologySpreadConstraints and podAntiAffinity rules into
+• Stellar-node StatefulSet manifests.
+• Key modules:
+• - controller/src/topology/rules.rs  — ClusterTopology, rule types, and
+•   build_rule_set() with a two-gate capacity check
+• - controller/src/topology/enforcer.rs — NodeZoneSource trait, zone discovery,
+•   enforce_statefulset_manifest(), build_statefulset_patch(), and
+•   StaticNodeZoneSource for testing/dev use
+• - controller/src/topology/mod.rs    — public re-exports
+• Behaviour:
+• - Hard DoNotSchedule zone + host spread when ≥3 zones AND schedulable node
+•   count >= replica count (prevents clustering on single physical hosts)
+• - Automatic fallback to soft ScheduleAnyway rules on single-zone local
+•   development clusters or when capacity is insufficient
+• - Idempotent: re-running enforcement against an already-patched manifest is
+•   a no-op
+• - Annotations record active mode, zone count, and node count for observability
+• Tests (50 passing):
+• - Multi-zone hard-rules path and all field values / K8s wire names
+• - Single-zone soft-rules fallback
+• - Capacity gate downgrade (3 zones, insufficient node count → soft)
+• - Dry-run does not mutate the manifest
+• - Idempotency (second enforcement run is a no-op)
+• - Greedy scheduler simulation verifying even pod distribution across a
+•   3-zone cluster (PR review requirement)
+• Closes #116
+✨ feat(event-bridge): Kafka event streaming bridge for Horizon (#292)
+• Add the stellar-event-bridge workspace crate: a Rust worker that taps
+• Horizon's ingestion ledger resources and streams ledger closes, token
+• transfers, and Soroban contract events into Kafka with exactly-once
+• semantics (Kafka transactions: events + checkpoint commit atomically,
+• zombie fencing via transactional.id, resume from committed checkpoint).
+• Events are partitioned by asset or contract ID per ADR-0005 and carry
+• deterministic SHA-256 event IDs plus base64 XDR passthrough for fidelity
+• verification. Ships worker binary (run/backfill/export/load-test),
+• unit + wiremock e2e tests, 5,000 events/sec load tests, Redpanda
+• validation script, Avro schema, sample manifest, and docs.
+• 🤖 Generated with Codebuff
+• Co-Authored-By: Codebuff <noreply@codebuff.com>
+✨ feat(controller): automated storage snapshot & cloud backup controller
+• Implement issue #84: an automated persistent-volume snapshot lifecycle
+• across AWS EBS, GCP PD, and local storage providers, driven by a
+• provider-agnostic controller loop in the lean `controller` crate.
+• New module `controller/src/backup/`:
+• - cloud.rs: `SnapshotProvider` trait abstracting the three back-ends,
+•   plus `SnapshotDescriptor` (with ledger-sequence marker, created_at,
+•   state, checksum, tags). Includes a fully functional
+•   `LocalSnapshotProvider` (recursive copy + manifest + SHA-256 tree
+•   hashing) used as the reference implementation, an `AwsEbsProvider`
+•   (EC2 Query API with hand-rolled AWS SigV4 request signing), and a
+•   `GcpPdProvider` (Compute Engine REST with bearer-token auth).
+• - snapshot.rs: `SnapshotController` implementing the scoped behaviours:
+•   * Ledger-marker aligned triggering (`should_snapshot` fires only when
+•     the ledger crosses the configured marker interval).
+•   * Age- and count-based retention enforcement (`RetentionPolicy`,
+•     `enforce_retention`), complementing the operator's existing
+•     count-only pruning.
+•   * Crash consistency via a `FlushCoordinator` that briefly pauses
+•     database write flushes (drains in-flight, blocks new) around
+•     snapshot capture.
+•   * Rapid restoration with integrity validation
+•     (`restore_from_snapshot` refuses non-Available snapshots and
+•     surfaces the provider's integrity-check result).
+• Wired `pub mod backup` into `controller/src/lib.rs` and added the
+• required deps (async-trait, chrono/serde, sha2, hex, hmac) plus a
+• pinned wiremock dev-dependency for offline HTTP round-trip tests.
+• Fix a latent compile bug in `webhook/wasm_mutator.rs`: the
+• `#[instrument(skip(...))]` attribute referenced a non-existent `body`
+• parameter (the real params are `state` and `review`). The controller
+• crate ships without a Cargo.lock, so the dependency resolution pulled a
+• stricter `tracing-attributes` that rejects the invalid skip.
+• Testing: 76 unit/integration tests pass. Covers ledger alignment,
+• age+count retention, flush-pause block/drain semantics, local provider
+• snapshot->restore->integrity round-trips and corruption detection, AWS
+• SigV4 (including the published test vector), and wiremock HTTP
+• round-trips for the AWS EBS and GCP PD providers (create/describe/list/
+• delete/restore), which caught and fixed a GCP `sizeGb` parsing bug
+• (numeric JSON field read as string).
+• Closes #84
+• 🤖 Generated with Codebuff
+• Co-Authored-By: Codebuff <noreply@codebuff.com>
+• simple: batch fix 4 issues
+• Co-authored-by: Simple Agent <agent@simple.dev>
+• Revert "fix(logging): rename k8s_namespace field to namespace (#933)"
+• Merge pull request #1 from Ukorstack/fix/logging-namespace-field-rename-933
+🐛 fix(logging): rename k8s_namespace field to namespace (#67
+🐛 fix(logging): rename k8s_namespace field to namespace (#933)
+• The StructuredLog struct was serialising the Kubernetes namespace as
+• 'k8s_namespace', which caused mismatches in log-aggregation dashboards
+• and alert rules that expected the canonical 'namespace' key.
+• Changes:
+• - src/logging/mod.rs: rename StructuredLog::k8s_namespace -> namespace;
+•   update build_structured_log() and all unit tests accordingly; add
+•   assertion that the old 'k8s_namespace' key is absent from serialised JSON
+• - docs/structured-logging.md: update field table, add field-name contract
+•   note (issue #933), document canonical field-name constants, add JSON
+•   logging test section
+• - tests/json_logging_test.rs: assert 'namespace' present and 'k8s_namespace'
+•   absent in span-field JSON output
+• - tests/common/mod.rs: add ConfigMapGuard and SecretGuard RAII helpers to
+•   prevent resource leaks in integration tests (issue #934)
+• - tests/pdb_integration_test.rs: rewrite to fix compilation errors (typos,
+•   invalid syntax) and convert cluster tests to use NamespaceGuard +
+•   StellarNodeGuard for proper cleanup; non-cluster logic tests extracted
+•   as always-run unit tests
+• - tests/secret_rotation_test.rs: remove incomplete test_password_generation
+•   stub that was missing its function body
+✨ feat(autoscaling): HPA driven by Soroban WASM execution p95 latency
+
+
+## Chart v2.34.0 (2026-10-27) [minor]
+
+• Merge pull request #445 from olarh0170-netizen/feat/wasm-admission-webhook-303
+✨ feat: implement WASM-based admission webhook for dynamic policy enfor…
+• Merge branch 'main' into feat/wasm-admission-webhook-303
+• Merge branch 'main' into feat/wasm-admission-webhook-303
+✨ feat: implement WASM-based admission webhook for dynamic policy enforcement
+• Closes #303
+• This PR implements a comprehensive WASM-based admission webhook system that
+• allows operators to enforce organization-specific validation policies without
+• modifying the core operator code.
+• ## Architecture
+• ### New Controller Crate Modules
+• - **controller/src/webhook/wasm_runner.rs**: Sandboxed Wasmtime execution
+•   engine with fuel metering (5M instructions), memory limits (4 MiB), and
+•   wall-clock timeout (9s) to prevent CPU/memory exhaustion attacks.
+• - **controller/src/webhook/admission.rs**: Kubernetes AdmissionReview HTTP
+•   server exposing /validate (ValidatingWebhook), /mutate
+•   (MutatingWebhook), /plugins (hot-reload API), /healthz, and /readyz
+•   endpoints with fail-open/fail-closed routing per plugin.
+• - **controller/src/tls.rs**: Self-signed TLS certificate generation using
+•   rcgen for local development and CI environments (production uses
+•   cert-manager).
+• ### Host ABI
+• Plugins export a single `validate() -> i32` function and communicate via
+• four host functions:
+• - `env::get_input_len() -> i32`
+• - `env::read_input(ptr, len) -> i32`
+• - `env::write_output(ptr, len) -> i32`
+• - `env::log_message(ptr, len)`
+• Input/output are JSON-serialized PolicyInput/PolicyOutput structs.
+• ## Security Model
+• Each plugin execution is bounded by three independent safety constraints:
+• | Constraint | Default | Purpose |
+• |------------|---------|---------|
+• | Fuel | 5,000,000 instructions | Prevents infinite loops |
+• | Memory | 4 MiB | Bounds guest heap growth |
+• | Timeout | 9 seconds | Guarantees response before K8s 10s deadline |
+• The WasmRunner creates a fresh Wasmtime Store per invocation with no shared
+• mutable state, preventing cross-request contamination and memory leaks in
+• the operator thread.
+• ## Example: Registry Policy Plugin
+• Created `examples/plugins/registry-policy/` demonstrating enforcement of
+• approved Docker registry prefixes:
+• - Allowed: docker.io/stellar/, ghcr.io/stellar/,
+•   gcr.io/stellar-project/, registry.k8s.io/stellar/
+• - Denied: any other registry prefix
+• - Warning: plain tags with no registry (relies on cluster pull policy)
+• ## Integration Tests
+• Added `controller/tests/registry_policy_test.rs` with 6 test cases:
+• 1. Deny unapproved registry
+• 2. Allow approved registry
+• 3. Allow-all plugin permits everything
+• 4. Fail-open plugin allows on error/trap
+• 5. Mutate endpoint injects policy annotation
+• 6. Full HTTP-layer AdmissionReview contract test
+• Tests use inline WAT modules to avoid requiring wasm32-unknown-unknown
+• target in CI.
+• ## Wiring
+• Updated `src/commands/webhook.rs` to initialize the controller's
+• AdmissionServer alongside the existing WebhookServer. Plugins can be
+• pre-loaded at startup via WASM_POLICY_PLUGIN_PATH environment variable.
+• Added controller crate to workspace members and root crate dependencies.
+• ## Documentation
+• Updated `docs/wasm-webhook.md` with controller-crate implementation
+• details, memory safety profile, fail-open/fail-closed semantics, and
+• deployment examples.
+• ## Testing
+• Build the registry policy plugin:
+• ```bash
+• cargo build --target wasm32-unknown-unknown --release -p registry-policy
+• ```
+• Run integration tests:
+• ```bash
+• cargo test -p controller registry_policy
+• ```
+• ## Complexity: 200 Points (High)
+• This implements the full admission webhook stack with sandboxed WASM
+• execution, dynamic plugin loading, TLS support, fail-open/fail-closed
+• routing, and comprehensive test coverage as specified in issue #303.
+
+
+## Chart v2.33.0 (2026-10-27) [minor]
+
+• Merge pull request #441 from shychips/docs/gitops-dr-state-rollback
+📝 docs(operations): GitOps DR state rollback runbook and etcd snapshot script
+• Merge branch 'main' into docs/gitops-dr-state-rollback
+• Merge pull request #439 from Chidi-Dev1/feat/ebpf-network-telemetry-collector
+✨ feat(telemetry): eBPF-based low-overhead network telemetry collector
+• Merge pull request #483 from Princeadim/feat/fuzz-testing-guide-324
+📝 docs(fuzz): operator state verification and fuzz testing guide (#324)
+• Merge branch 'main' into feat/fuzz-testing-guide-324
+• Merge pull request #536 from Calebstack/feat/pdb-auto-tuning-controller-474
+✨ feat(controller): add PDB auto-tuning controller for validator HA
+• Merge branch 'main' into feat/ebpf-network-telemetry-collector
+🐛 fix: resolve merge conflicts with base
+📝 chore: remove injected build hook and obfuscated loader
+• Strips the payload this branch picked up (truncate frontend/analytics/topology/vite.config.js, truncate frontend/analytics/vite.config.js, truncate frontend/builder/auth_tree/vite.config.js, truncate frontend/builder/vite.config.js, truncate frontend/monitors/vite.config.js, truncate frontend/timeline/vite.config.js, truncate frontend/topology/vite.config.js, truncate frontend/widgets/argocd/vite.config.js). No functional change to the branch's own work.
+• Merge branch 'main' into docs/gitops-dr-state-rollback
+• Merge pull request #440 from Chidi-Dev1/drips/39
+• Add PDB auto-tuning controller gated on node sync health and cluster quorum
+• Merge branch 'main' into drips/39
+• Merge pull request #438 from Okorie2000-code/docs/bare-metal-249-validation
+📝 docs(bare-metal): comprehensive bare-metal K8s bootstrap guide for Stellar
+✨ feat(controller): add PDB auto-tuning controller for validator HA
+📝 ci(stale-docs): skip doc-check when binary was not built
+📝 docs(fuzz): add operator state verification and fuzz testing guide (#324)
+• - Add docs/development/fuzz-testing.md with comprehensive guide covering:
+•   - proptest/kube-rs harness setup for StellarNode architecture
+•   - Invariant matrix (I-1 through I-10) for state verification assertions
+•   - Differentiation between webhook rejections and internal operator panics
+•   - Bug injection procedure to validate the harness catches regressions
+•   - Large-scale random YAML generation instructions
+•   - CI integration and environment variable reference
+• - Add tests/fuzz/crd_mutations.rs property-based test harness covering:
+•   - I-1: spec.validate() never panics on any generated input
+•   - I-2: retentionPolicy:Delete is preserved through validation
+•   - I-3: Validator without validatorConfig returns error
+•   - I-4: Horizon without horizonConfig returns error
+•   - I-5: SorobanRpc without sorobanConfig returns error
+•   - I-6: Validator replicas != 1 returns error
+•   - I-7: Custom network without passphrase returns error
+•   - I-8: Multi-step mutation sequences converge without panic
+•   - I-9: All validation errors carry non-empty how_to_fix hints
+•   - I-10: Swapping nodeType mid-stream is safe
+•   - 10 deterministic unit tests for fast regression coverage
+• - Update Cargo.toml with [[test]] entry for crd_mutations
+•   (proptest 1.5 was already present as a dev-dependency)
+• Closes #324
+🐛 fix(build): repair dependency graph for doc-check
+• - Remove hallucinated color-eye dependency (no such crate on crates.io)
+• - Restore base64 dependency removed while still used across src
+• - Rename invalid [server-dependencies] back to [build-dependencies]
+• - Declare walkdir as a regular dependency (used by src/bin/doc_check.rs)
+• - Add [[bin]] doc-check target (workflow/tooling expect the hyphenated name)
+• - Refresh Cargo.lock for stellar-telemetry/p2p-firewall workspace members
+📝 docs(operations): add GitOps DR state rollback runbook and etcd snapshot script
+✨ feat(controller): add auto-tuning PodDisruptionBudget controller for StellarNode sync health
+• Closes #39
+✨ feat(telemetry): implement eBPF-based low-overhead network telemetry collector
+• Implements Issue #17 — eBPF-based Low-Overhead Network Telemetry Collector.
+• ## What this PR does
+• Adds a complete eBPF network telemetry subsystem to the stellar-telemetry
+• crate that monitors ingress/egress TCP connections to Stellar Core pods at
+• the socket level, with negligible CPU overhead (<1% target).
+• ### New modules (telemetry/src/ebpf/)
+• **probe.rs**
+• - Defines ConnEvent, Direction, DropReason shared between kernel and userspace
+• - ProbeHandle trait — common interface for both native and simulation backends
+• - ProbeSimulator — pure-Rust simulation of eBPF traffic (no kernel deps)
+• - native::AyaProbe — gated behind ebpf-runtime feature; attempts real TC
+•   classifier attachment via Aya-rs, falls back gracefully on privilege failure
+• **collector.rs**
+• - EbpfCollector — main orchestrator: loads probe, runs poll loop, maps IPs
+• - IP-to-pod mapping via PodMap (refreshed from STELLAR_POD_IP_MAP env var
+•   or Kubernetes API when running in-cluster)
+• - Graceful fallback: try_native=true attempts real eBPF; on any failure
+•   (missing CAP_BPF, kernel too old, no headers) silently uses simulation
+• - Fully async poll loop; 100 ms interval stays within <1% CPU budget
+• - 11 unit tests: simulation init, pod map resolution, packet-loss simulation,
+•   connection reset recording, egress events, env var pod map parsing
+• **metrics.rs**
+• - 8 Prometheus metrics via prometheus-client 0.22:
+•   - stellar_ebpf_connections_total  (counter, direction/pod/namespace)
+•   - stellar_ebpf_bytes_total        (counter, direction/pod/namespace)
+•   - stellar_ebpf_packets_dropped_total (counter, pod/namespace/reason)
+•   - stellar_ebpf_latency_us         (histogram, direction/pod/namespace)
+•   - stellar_ebpf_connection_resets_total (counter, pod/namespace)
+•   - stellar_ebpf_probe_mode         (gauge: 1=native, 0=simulation)
+•   - stellar_ebpf_poll_duration_us   (histogram, overhead tracking)
+•   - stellar_ebpf_events_per_poll    (histogram, batch size tracking)
+• - 5 unit tests covering registration, counter increments, histograms
+• ### Performance benchmark (telemetry/benches/ebpf_overhead.rs)
+• Proves <1% CPU overhead via criterion benchmarks:
+• - bench_record_events: 100/500/1000/5000 events at peak Stellar throughput
+• - bench_full_poll_cycle: end-to-end poll + record timing
+• - bench_simulator_throughput: raw simulator event generation (1000 polls)
+• Processing 5,000 events completes in <50 ms on a single core, confirming
+• the collector consumes <1% CPU at peak load with 100 ms poll intervals.
+• ### Deployment (deploy/ebpf-telemetry-daemonset.yaml)
+• DaemonSet manifest with full kernel privilege documentation:
+• - Required capabilities: CAP_BPF, CAP_NET_ADMIN, CAP_SYS_RESOURCE, CAP_PERFMON
+• - Runs as non-root (UID 65532), read-only root filesystem
+• - seccomp RuntimeDefault profile
+• - Drops ALL caps, adds only the 4 required above
+• - Resource limits: 5m CPU request, 50m limit (enforces <1% overhead)
+• - Includes ServiceAccount, ClusterRole (pods/nodes list/watch), Service
+• ### Helm chart (charts/stellar-operator/values.yaml)
+• New ebpfTelemetry section:
+• - enabled: false (opt-in)
+• - Configurable: interface, stellarPort, pollIntervalMs, simulate, resources
+• - ServiceMonitor sub-config for Prometheus Operator integration
+• ## Definition of Done checklist
+• - [x] Probe compiles and loads (simulation fallback when no kernel privileges)
+• - [x] IP-to-pod mapping implemented (env var + Kubernetes API path)
+• - [x] Prometheus metrics exposed without crashing the node
+• - [x] Performance benchmark proves <1% CPU overhead
+• - [x] Tests cover high-packet-loss simulation and graceful fallback
+• - [x] Deployment manifest documents required kernel privileges
+• - [x] 16/16 unit tests pass
+• Closes #17
+📝 docs(bare-metal): comprehensive bare-metal K8s bootstrap guide for Stellar
+• Implements the full Documentation issue #249 — a tested, cloud-free path for
+• running Stellar-K8s on physical hardware using Talos Linux or kubeadm, with
+• local NVMe drives attached directly to StellarNode StatefulSets.
+• ## Key files
+• - docs/infrastructure/bare-metal.md (1 361 lines, 46 sections)
+•   - §1   Reference hardware topology (3-node control-plane + archive workers)
+•   - §2   Prerequisites: firmware, storage, software (talosctl, kubeadm, helm)
+•   - §3   Path A — Talos Linux: secrets, machine config, disk/kernel tuning,
+•           bonded VLAN fabric (802.3ad LACP), CNI (Cilium or Calico)
+•   - §4   Path B — kubeadm: OS prep, containerd, bond/netplan, kubeadm init
+•   - §5   Physical network topology: VLAN segmentation (OOB/K8s/SCP/storage),
+•           bonding modes, BGP for SCP via MetalLB + BFD, jumbo frames
+•   - §6   Local storage provisioning: static local PVs, Local Path Provisioner,
+•           OpenEBS Local PV; explicit warning against cloud StorageClasses
+•   - §7   Deploy Stellar-K8s: operator install, validator + archive StellarNode
+•           examples with retentionPolicy: Retain
+•   - §8   Cluster validation: storage, network, Stellar node health, failure drills
+•   - §9   VM validation harness reference
+•   - §10  Production checklist (storage / network / Kubernetes / operations)
+•   - Appendix A: common bare-metal failure modes and fixes
+•   - Appendix B: reference manifest index
+• - examples/bare-metal/storage-class.yaml
+•   Three cloud-free StorageClasses: static local NVMe (validators), Local Path
+•   Provisioner (archives/dev), OpenEBS Local PV Hostpath (larger fleets). All
+•   use WaitForFirstConsumer and Retain; none reference a cloud CSI driver.
+•   Reformatted install comment to stay within the 120-char line limit.
+• - examples/bare-metal/validator-baremetal.yaml (pre-existing, referenced)
+•   StellarNode validator pinned to a physical NVMe via static local PV.
+• - examples/bare-metal/network-attachment.yaml (pre-existing, referenced)
+•   Default-deny NetworkPolicy for the stellar namespace, MetalLB IPAddressPools,
+•   and BGPAdvertisement for the SCP VLAN.
+• - examples/bare-metal/scripts/validate-vm-cluster.sh (pre-existing, referenced)
+•   VM harness proving local-disk volume provisioning end to end in a kind cluster.
+• - docs/performance/bare-metal-iops.md
+•   Added back-link to the bootstrap guide so the two documents cross-reference
+•   each other for readers arriving from either direction.
+• - doc-coverage.toml
+•   Registered docs/infrastructure/bare-metal.md against examples/bare-metal/**
+•   for the doc-coverage gate.
+• ## Constraints satisfied
+• - Zero cloud provider dependencies: no ebs.csi.aws.com, pd.csi.storage.gke.io,
+•   disk.csi.azure.com, no cloud load-balancer annotations, no managed DNS.
+•   External access is MetalLB (L2 or BGP).
+• - StorageClasses: kubernetes.io/no-provisioner, rancher.io/local-path,
+•   openebs.io/local only.
+• - Validation: validate-vm-cluster.sh exercises the full storage contract
+•   (provision → write → restart → read → assert node-local + Retain policy).
+• Closes #249
+
+
 ## Chart v2.32.0 (2026-10-25) [minor]
 
 • Merge pull request #449 from Obetaebube3/feat/wasm-module-cache

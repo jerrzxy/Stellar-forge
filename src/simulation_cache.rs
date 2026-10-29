@@ -44,6 +44,7 @@
 //! to a miss, never to an error surfaced to the RPC client.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lru::LruCache;
@@ -51,6 +52,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::warn;
+
+use crate::wasm::sandbox_pool::{PooledSandbox, SandboxPool};
 
 /// Default LRU capacity in entries.
 pub const DEFAULT_MAX_ENTRIES: usize = 10_000;
@@ -239,10 +242,18 @@ struct LruState {
 /// Clones cheaply; the inner state is behind a tokio `Mutex` so
 /// `get`/`insert` can be awaited from async contexts without blocking the
 /// executor.
+///
+/// When a [`SandboxPool`] is attached (see [`SimulationCache::with_sandbox_pool`]),
+/// cache misses execute `simulateTransaction` inside a warm, pre-initialized
+/// Wasmtime sandbox acquired from the pool instead of instantiating a fresh
+/// runtime per call. The sandbox is scrubbed and returned to the pool after
+/// execution, so no linear-memory state can leak between consecutive
+/// contract executions.
 #[derive(Clone)]
 pub struct SimulationCache {
     config: SimulationCacheConfig,
     inner: std::sync::Arc<Mutex<LruState>>,
+    sandbox_pool: Option<Arc<SandboxPool>>,
 }
 
 impl SimulationCache {
@@ -256,6 +267,49 @@ impl SimulationCache {
                 ledger_high_water: None,
                 stats: CacheStats::default(),
             })),
+            sandbox_pool: None,
+        }
+    }
+
+    /// Attach a warm sandbox pool used to execute cache-miss simulations.
+    ///
+    /// Builder-style so existing call sites keep working unchanged; without a
+    /// pool the cache behaves exactly as before (pure LRU + Redis tier).
+    pub fn with_sandbox_pool(mut self, pool: Arc<SandboxPool>) -> Self {
+        self.sandbox_pool = Some(pool);
+        self
+    }
+
+    /// Execute a simulation inside a pooled sandbox, returning the raw
+    /// JSON-RPC response bytes.
+    ///
+    /// The sandbox is acquired from the warm pool, used for exactly one
+    /// execution, then scrubbed and returned to the pool. If no pool is
+    /// attached this returns `None` and the caller falls back to its own
+    /// execution path.
+    ///
+    /// Fail-open: any pool or execution error degrades to `None` rather than
+    /// surfacing to the RPC client.
+    pub async fn execute_in_sandbox(&self, request: &[u8]) -> Option<Vec<u8>> {
+        let pool = self.sandbox_pool.as_ref()?;
+        let mut sandbox: PooledSandbox = match pool.acquire().await {
+            Ok(sandbox) => sandbox,
+            Err(error) => {
+                warn!(%error, "sandbox pool acquire failed; falling back");
+                return None;
+            }
+        };
+        let result = sandbox.execute(request).await;
+        // Always return the sandbox to the pool: `release` scrubs the linear
+        // memory before the instance becomes reusable. On execution error the
+        // sandbox is discarded by the pool rather than reused.
+        pool.release(sandbox, result.is_ok()).await;
+        match result {
+            Ok(body) => Some(body),
+            Err(error) => {
+                warn!(%error, "sandboxed simulation execution failed; failing open");
+                None
+            }
         }
     }
 
@@ -305,6 +359,31 @@ impl SimulationCache {
             },
         );
         state.stats.stores += 1;
+    }
+
+    /// Look up a simulation response, executing it in a pooled sandbox on a
+    /// miss when a pool is attached.
+    ///
+    /// This is the integration point for issue #321: instead of instantiating
+    /// a fresh Wasmtime sandbox per `simulateTransaction`, misses borrow a
+    /// warm instance from the pool, execute, scrub, and return it. The
+    /// resulting body is inserted into the LRU so subsequent identical
+    /// requests hit the cache.
+    ///
+    /// Returns `None` when the request is not cacheable, the cache misses and
+    /// no pool is attached, or execution fails (fail-open).
+    pub async fn get_or_execute(&self, request: &[u8]) -> Option<CachedSimulation> {
+        let key = SimCacheKey::from_request(request)?;
+        if let Some(hit) = self.get(&key).await {
+            return Some(hit);
+        }
+        let body = self.execute_in_sandbox(request).await?;
+        self.insert(key.clone(), body.clone()).await;
+        Some(CachedSimulation {
+            body,
+            ledger_sequence: key.ledger_sequence,
+            captured_at: std::time::Instant::now(),
+        })
     }
 
     /// Invalidation hook: call whenever the global ledger sequence
@@ -838,5 +917,39 @@ mod tests {
         let key = key_for(&sim_request(Some(5), &[3]));
         assert!(store.get(&key).await.is_none());
         store.set(&key, b"ignored").await; // must not panic either
+    }
+
+    #[tokio::test]
+    async fn get_or_execute_without_pool_falls_back_to_none() {
+        // No pool attached: a miss must degrade to `None` (fail-open) rather
+        // than panicking or surfacing an error.
+        let cache = SimulationCache::new(SimulationCacheConfig::default());
+        let body = sim_request(Some(100), &[1]);
+        assert!(cache.get_or_execute(&body).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_or_execute_uses_pooled_sandbox_and_caches_result() {
+        let pool = Arc::new(SandboxPool::new(Default::default()));
+        let cache =
+            SimulationCache::new(SimulationCacheConfig::default()).with_sandbox_pool(pool.clone());
+        let body = sim_request(Some(100), &[1]);
+
+        let first = cache
+            .get_or_execute(&body)
+            .await
+            .expect("pooled execution on miss");
+        assert!(!first.body.is_empty());
+
+        // Second identical request must be served from the LRU, not the pool.
+        let second = cache
+            .get_or_execute(&body)
+            .await
+            .expect("cache hit after pooled execution");
+        assert_eq!(first.body, second.body);
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.stores, 1);
     }
 }

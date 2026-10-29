@@ -1,0 +1,333 @@
+# eBPF Network Telemetry Collector — DaemonSet Deployment Manifest
+#
+# Issue #17: eBPF-based Low-Overhead Network Telemetry Collector
+#
+# This manifest deploys the stellar-ebpf-telemetry collector as a DaemonSet
+# so that one instance runs on every node where Stellar Core pods are
+# scheduled.  Each instance monitors the host network stack for connections
+# to/from Stellar Core pods on the node.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# REQUIRED KERNEL PRIVILEGES
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Native eBPF attachment requires the following Linux capabilities:
+#
+#   CAP_BPF          — load and manage BPF programs and maps (kernel ≥ 5.8)
+#   CAP_NET_ADMIN    — attach TC (traffic control) classifiers to interfaces
+#   CAP_SYS_RESOURCE — raise RLIMIT_MEMLOCK for BPF map memory
+#   CAP_PERFMON      — access perf event subsystem (kernel ≥ 5.8)
+#
+# On kernels < 5.8 CAP_SYS_ADMIN covers all of the above, but this is
+# strongly discouraged in production.
+#
+# The collector automatically falls back to simulation mode when:
+#   • The above capabilities are absent.
+#   • The kernel BPF JIT is disabled (CONFIG_BPF_JIT not set).
+#   • The runtime environment sets STELLAR_EBPF_SIMULATE=true.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# SECURITY POSTURE
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Even with CAP_BPF + CAP_NET_ADMIN this pod:
+#   • Runs as non-root (UID 65532 / distroless "nonroot").
+#   • Has a read-only root filesystem.
+#   • Cannot escalate privileges (allowPrivilegeEscalation: false).
+#   • Uses seccomp profile RuntimeDefault.
+#   • Drops ALL capabilities except the four listed above.
+#
+# Pair this with the PodSecurityPolicy (or Pod Security Standards baseline)
+# defined in config/manifests/gatekeeper/.
+#
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: stellar-ebpf-telemetry
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+    app.kubernetes.io/component: telemetry
+    app.kubernetes.io/part-of: stellar-operator
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    # Document the required Linux capabilities for cluster administrators.
+    stellar.org/required-capabilities: "CAP_BPF,CAP_NET_ADMIN,CAP_SYS_RESOURCE,CAP_PERFMON"
+    stellar.org/ebpf-fallback: "simulation"
+    stellar.org/issue: "https://github.com/agnesnaomiolim-cloud/Stellar-forge/issues/17"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-ebpf-telemetry
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-ebpf-telemetry
+        app.kubernetes.io/component: telemetry
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9437"
+        prometheus.io/path: "/ebpf/metrics"
+    spec:
+      # ── Service Account ──────────────────────────────────────────────────
+      serviceAccountName: stellar-ebpf-telemetry
+      # ── Host network access (required for TC attachment) ─────────────────
+      # The collector must observe the host network namespace to attach TC
+      # classifiers to the node's network interfaces.
+      hostNetwork: false  # set to true only if attaching to host-level ifaces
+      # ── Init container: kernel capability check ──────────────────────────
+      initContainers:
+        - name: capability-check
+          image: ghcr.io/stellar/stellar-operator:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Probe for BPF capability; set SIMULATE flag if unavailable.
+              if ! captest --cap CAP_BPF 2>/dev/null; then
+                echo "CAP_BPF not available — collector will run in simulation mode"
+              fi
+              echo "Capability check complete"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "5m"
+              memory: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "32Mi"
+
+      containers:
+        - name: ebpf-telemetry
+          image: ghcr.io/stellar/stellar-operator:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - ebpf-telemetry
+            - --interface=$(NODE_IFACE)
+            - --stellar-port=11625
+            - --metrics-port=9437
+            - --poll-interval-ms=100
+
+          ports:
+            - name: metrics
+              containerPort: 9437
+              protocol: TCP
+
+          env:
+            # Injected by the downward API — used for pod map refresh.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Primary network interface to monitor (overridden per node
+            # via a ConfigMap in production).
+            - name: NODE_IFACE
+              value: "eth0"
+            # Set to "true" to force simulation mode in restricted envs.
+            - name: STELLAR_EBPF_SIMULATE
+              value: "false"
+            - name: RUST_LOG
+              value: "info,stellar_telemetry::ebpf=debug"
+
+          # ── Volume mounts ───────────────────────────────────────────────
+          volumeMounts:
+            # BPF filesystem must be mounted for Aya to load programs.
+            - name: bpf-fs
+              mountPath: /sys/fs/bpf
+            # Debugfs for perf events.
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            # Proc filesystem for resolving PID → cgroup → pod mappings.
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+
+          # ── Security context (minimum required privileges) ───────────────
+          securityContext:
+            # Non-root: UID 65532 is the distroless "nonroot" user.
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            # seccomp restricts syscalls to the default container set.
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+              add:
+                # Required for eBPF program loading (kernel ≥ 5.8).
+                - CAP_BPF
+                # Required to attach TC classifiers to network interfaces.
+                - CAP_NET_ADMIN
+                # Required to raise RLIMIT_MEMLOCK for BPF maps.
+                - CAP_SYS_RESOURCE
+                # Required for perf event access (kernel ≥ 5.8).
+                - CAP_PERFMON
+
+          # ── Resource limits (< 1% CPU overhead target) ──────────────────
+          # The collector is designed to use < 5 millicores at steady state
+          # (i.e. < 0.5% of a single core), satisfying the < 1% overhead
+          # requirement from issue #17.
+          resources:
+            requests:
+              cpu: "5m"
+              memory: "32Mi"
+            limits:
+              cpu: "50m"      # hard cap; never starves core node processes
+              memory: "64Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9437
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9437
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+      # ── Volumes ──────────────────────────────────────────────────────────
+      volumes:
+        - name: bpf-fs
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: DirectoryOrCreate
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+
+      # ── Scheduling ───────────────────────────────────────────────────────
+      # Only schedule on nodes where Stellar Core is running.
+      nodeSelector:
+        stellar.org/node-type: stellar-core
+
+      tolerations:
+        - key: "stellar.org/dedicated"
+          operator: "Equal"
+          value: "stellar-core"
+          effect: "NoSchedule"
+
+      # Priority: lower than Stellar Core to ensure core process is not
+      # starved by the telemetry collector.
+      priorityClassName: stellar-low-priority
+
+---
+# ── ServiceAccount ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stellar-ebpf-telemetry
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+    app.kubernetes.io/component: telemetry
+    app.kubernetes.io/part-of: stellar-operator
+
+---
+# ── ClusterRole: pod list for IP→pod mapping ────────────────────────────────
+# The collector needs to list/watch pods to build the IP→pod mapping table.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellar-ebpf-telemetry
+  labels:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ── ClusterRoleBinding ───────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stellar-ebpf-telemetry
+  labels:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stellar-ebpf-telemetry
+subjects:
+  - kind: ServiceAccount
+    name: stellar-ebpf-telemetry
+    namespace: stellar-system
+
+---
+# ── Service: Prometheus scrape target ────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: stellar-ebpf-telemetry
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+    app.kubernetes.io/component: telemetry
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9437"
+    prometheus.io/path: "/ebpf/metrics"
+spec:
+  selector:
+    app.kubernetes.io/name: stellar-ebpf-telemetry
+  ports:
+    - name: metrics
+      port: 9437
+      targetPort: metrics
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ── ServiceMonitor: Prometheus Operator integration ──────────────────────────
+# Uncomment and apply if using the Prometheus Operator CRD.
+#
+# apiVersion: monitoring.coreos.com/v1
+# kind: ServiceMonitor
+# metadata:
+#   name: stellar-ebpf-telemetry
+#   namespace: stellar-system
+#   labels:
+#     release: prometheus  # match your Prometheus Operator release label
+# spec:
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: stellar-ebpf-telemetry
+#   endpoints:
+#     - port: metrics
+#       path: /ebpf/metrics
+#       interval: 15s
+#       scrapeTimeout: 10s

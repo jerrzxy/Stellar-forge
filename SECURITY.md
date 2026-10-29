@@ -92,6 +92,49 @@ make check-license-headers     # License header enforcement
 - **Access Controls**: Kubernetes RBAC integration
 - **Audit Logging**: Comprehensive security event logging
 
+### Validator Node Identity & Secrets Rotation
+
+Validator seed keys are long-lived cryptographic liabilities. The controller automates rotation of Stellar node identities via GitOps, pulling dynamically generated ed25519 identities from External Secrets Operator (ESO) backed by AWS Secrets Manager or HashiCorp Vault. Key modules: `controller/src/security/rotation.rs` and `controller/src/security/eso_integration.rs`.
+
+#### Transit Pathway Review (ESO → Kubernetes Secret → Pod Memory)
+
+Every PR touching rotation or ESO integration must include a security review of the full transit pathway:
+
+1. **External store → ESO**: Transport is TLS with certificate validation; authentication uses workload identity (IRSA / Vault Kubernetes auth) with least-privilege read-only access scoped to the specific secret path. No static long-lived credentials.
+2. **ESO → Kubernetes Secret**: Secrets are written to a dedicated namespace with RBAC restricted to the controller service account. Encryption at rest (etcd encryption / KMS) is required. Secret access is audited via the Kubernetes audit log.
+3. **Kubernetes Secret → Pod memory**: Secrets are mounted as `tmpfs` (in-memory) volumes or injected via environment with `readOnlyRootFilesystem: true`. Secrets must never be written to disk, logged, or included in crash dumps. Access is limited to the node process UID.
+4. **In-memory handling**: Seed material is held in zeroizing buffers and explicitly zeroized after use. No copies are made into long-lived structures, and secrets are excluded from `Debug`/`Display` output.
+
+#### Threat Model
+
+| Threat | Mitigation |
+| ------ | ---------- |
+| Secret exfiltration from external store | Least-privilege scoped read access; workload identity; audit logging |
+| Interception in transit | TLS everywhere with strict certificate validation |
+| Secret leakage via logs / dumps | Redaction, no secret logging, zeroization, `Debug` exclusion |
+| Unauthorized pod access to Secret | Namespace isolation, RBAC, `tmpfs` mounts, non-root UID |
+| Quorum loss during rotation | Staggered rotation across cluster; quorum thresholds enforced |
+| Stale key reuse | Automated 30-day rotation policy; old keys revoked after rejoin |
+
+#### Memory Zeroization
+
+- Seed material is wrapped in zeroizing types and cleared on drop.
+- Buffers are never reallocated or copied without zeroizing the source.
+- Secrets are not persisted to swap or disk; `tmpfs` mounts and read-only root filesystems are enforced.
+
+#### PR Review Checklist
+
+- [ ] Transit pathway (external store → ESO → Secret → pod memory) reviewed end-to-end
+- [ ] TLS and certificate validation verified for all hops
+- [ ] Least-privilege RBAC and workload identity confirmed
+- [ ] Secrets mounted via `tmpfs`; no disk persistence; read-only root filesystem
+- [ ] Zeroization of seed material verified; no secret logging or `Debug` output
+- [ ] Rotation is staggered to preserve quorum; un-peer/rejoin sequence validated
+- [ ] Automated 30-day rotation validated on a 5-node testnet without halting ledger advancement
+- [ ] Horizon ingestion workers updated to reflect rotated keys
+- [ ] Audit logging enabled for secret access
+=======
+
 ### Container Security
 
 - **Minimal Base Images**: Distroless base images

@@ -1,0 +1,19 @@
+[package]
+name = "registry-policy"
+version = "0.1.0"
+edition = "2021"
+description = "WASM admission policy: enforces approved Docker registry prefixes for StellarNode resources"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

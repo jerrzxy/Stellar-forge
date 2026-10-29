@@ -110,6 +110,30 @@ pub enum DataKey {
 /// * `max_price_deviation_bps` — Maximum tolerated TWAP deviation expressed
 ///   in basis points (1/10 000).  E.g. `500` == 5%.  Set to `10_000` or
 ///   higher to allow any deviation (effectively disabled).
+///
+/// ## GitOps payload approval fields
+///
+/// These fields gate the emission of GitOps deployment trigger events.  A
+/// proposed infrastructure payload (identified by an IPFS hash or Git commit
+/// SHA) must be approved by at least `gitops_threshold` distinct members of
+/// `gitops_signers` before it can be emitted.  Each approval is bound to a
+/// monotonically increasing `gitops_nonce` and must fall inside a bounded
+/// ledger window so that stale or replayed approvals are rejected.
+///
+/// * `gitops_threshold` — Minimum number of authorised GitOps signers that
+///   must approve a payload hash before emission.  Must be ≥ 1 and ≤ the
+///   length of `gitops_signers`.
+///
+/// * `gitops_signers` — Authorised GitOps approver set.  Only addresses in
+///   this set may contribute approvals.
+///
+/// * `gitops_nonce` — Monotonic replay-protection counter.  Every emitted
+///   payload consumes exactly one nonce; approvals are only valid for the
+///   current nonce value.
+///
+/// * `gitops_window_ledgers` — Maximum age (in ledgers) of an approval
+///   relative to the ledger at which it was recorded.  Approvals older than
+///   this window are rejected as stale.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionPolicy {
@@ -121,6 +145,14 @@ pub struct ExecutionPolicy {
     pub reference_twap_price: i128,
     /// Maximum tolerated TWAP deviation in basis points (e.g. 500 = 5 %).
     pub max_price_deviation_bps: u32,
+    /// Minimum number of GitOps signer approvals required to emit a payload.
+    pub gitops_threshold: u32,
+    /// Authorised GitOps approver set.
+    pub gitops_signers: Vec<Address>,
+    /// Monotonic replay-protection nonce for GitOps payload emissions.
+    pub gitops_nonce: u64,
+    /// Maximum age (in ledgers) of a GitOps approval before it is stale.
+    pub gitops_window_ledgers: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +218,21 @@ pub enum PolicyError {
     InvalidAmount = 12,
     /// Arithmetic overflow in policy calculation.
     Overflow = 13,
+    // ---- GitOps payload approval codes ----
+    /// `gitops_threshold` must be ≥ 1 and ≤ number of GitOps signers.
+    InvalidGitopsThreshold = 14,
+    /// The GitOps signer set must not be empty.
+    EmptyGitopsSignerSet = 15,
+    /// Caller is not an authorised GitOps signer.
+    NotGitopsSigner = 16,
+    /// The supplied nonce does not match the policy's current nonce.
+    InvalidGitopsNonce = 17,
+    /// The approval is older than `gitops_window_ledgers` and is stale.
+    StaleGitopsApproval = 18,
+    /// The GitOps payload hash has already been approved by this signer.
+    DuplicateGitopsApproval = 19,
+    /// The GitOps payload hash is empty.
+    EmptyGitopsPayload = 20,
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +379,112 @@ pub fn assert_twap_within_policy(
 }
 
 // ---------------------------------------------------------------------------
+// Policy validation — GitOps payload approval guards
+// ---------------------------------------------------------------------------
+
+/// Assert that the GitOps approval configuration is internally consistent.
+///
+/// # Errors
+///
+/// * [`PolicyError::EmptyGitopsSignerSet`] — `gitops_signers` is empty.
+/// * [`PolicyError::InvalidGitopsThreshold`] — `gitops_threshold` is zero or
+///   exceeds the number of authorised GitOps signers.
+pub fn assert_gitops_config_valid(policy: &ExecutionPolicy) -> Result<(), PolicyError> {
+    let signer_count = policy.gitops_signers.len();
+    if signer_count == 0 {
+        return Err(PolicyError::EmptyGitopsSignerSet);
+    }
+    if policy.gitops_threshold == 0 || policy.gitops_threshold > signer_count {
+        return Err(PolicyError::InvalidGitopsThreshold);
+    }
+    Ok(())
+}
+
+/// Assert that `signer` is a member of the authorised GitOps approver set.
+///
+/// # Errors
+///
+/// * [`PolicyError::NotGitopsSigner`] — `signer` is not authorised.
+pub fn assert_gitops_signer(policy: &ExecutionPolicy, signer: &Address) -> Result<(), PolicyError> {
+    if !policy.gitops_signers.contains(signer) {
+        return Err(PolicyError::NotGitopsSigner);
+    }
+    Ok(())
+}
+
+/// Assert that `nonce` matches the policy's current GitOps nonce.
+///
+/// Binding approvals to the current nonce prevents replay of previously
+/// emitted GitOps trigger events.
+///
+/// # Errors
+///
+/// * [`PolicyError::InvalidGitopsNonce`] — `nonce` != `policy.gitops_nonce`.
+pub fn assert_gitops_nonce(policy: &ExecutionPolicy, nonce: u64) -> Result<(), PolicyError> {
+    if nonce != policy.gitops_nonce {
+        return Err(PolicyError::InvalidGitopsNonce);
+    }
+    Ok(())
+}
+
+/// Assert that an approval recorded at `approved_at_ledger` is still fresh.
+///
+/// An approval is stale when the current ledger is more than
+/// `gitops_window_ledgers` ahead of the ledger at which it was recorded.
+/// A zero window disables the staleness check.
+///
+/// # Errors
+///
+/// * [`PolicyError::StaleGitopsApproval`] — the approval has expired.
+pub fn assert_gitops_fresh(
+    policy: &ExecutionPolicy,
+    approved_at_ledger: u32,
+    current_ledger: u32,
+) -> Result<(), PolicyError> {
+    if policy.gitops_window_ledgers == 0 {
+        return Ok(());
+    }
+    // Saturating subtraction: a future-dated approval is treated as fresh
+    // (age 0) rather than wrapping around.
+    let age = current_ledger.saturating_sub(approved_at_ledger);
+    if age > policy.gitops_window_ledgers {
+        return Err(PolicyError::StaleGitopsApproval);
+    }
+    Ok(())
+}
+
+/// Assert that `payload_hash` is non-empty.
+///
+/// The payload hash is expected to be an IPFS CID or Git commit SHA encoded
+/// as bytes; an empty hash can never identify a deployment target.
+///
+/// # Errors
+///
+/// * [`PolicyError::EmptyGitopsPayload`] — `payload_hash` has zero length.
+pub fn assert_gitops_payload_nonempty(payload_hash: &soroban_sdk::Bytes) -> Result<(), PolicyError> {
+    if payload_hash.is_empty() {
+        return Err(PolicyError::EmptyGitopsPayload);
+    }
+    Ok(())
+}
+
+/// Assert that the collected GitOps approvals meet the policy threshold.
+///
+/// # Errors
+///
+/// * [`PolicyError::ThresholdNotMet`] — fewer approvals than
+///   `policy.gitops_threshold`.
+pub fn assert_gitops_threshold_met(
+    policy: &ExecutionPolicy,
+    approval_count: u32,
+) -> Result<(), PolicyError> {
+    if approval_count < policy.gitops_threshold {
+        return Err(PolicyError::ThresholdNotMet);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for pure policy logic
 // ---------------------------------------------------------------------------
 
@@ -350,6 +503,10 @@ mod tests {
             twap_oracle: soroban_sdk::Address::generate(&env),
             reference_twap_price: 1_000_000,
             max_price_deviation_bps: 500,
+            gitops_threshold: 1,
+            gitops_signers: Vec::new(&env),
+            gitops_nonce: 0,
+            gitops_window_ledgers: 0,
         };
         // Fee equal to ceiling should pass.
         assert!(assert_fee_within_policy(100, &policy).is_ok());
@@ -394,6 +551,10 @@ mod tests {
             twap_oracle: soroban_sdk::Address::generate(&env),
             reference_twap_price: 1_000_000,
             max_price_deviation_bps: u32::MAX,
+            gitops_threshold: 1,
+            gitops_signers: Vec::new(&env),
+            gitops_nonce: 0,
+            gitops_window_ledgers: 0,
         };
         // Any live price should pass when guard is disabled.
         assert!(assert_twap_within_policy(&policy, 9_999_999_999).is_ok());
@@ -407,9 +568,125 @@ mod tests {
             twap_oracle: soroban_sdk::Address::generate(&env),
             reference_twap_price: 1_000_000,
             max_price_deviation_bps: 500, // 5%
+            gitops_threshold: 1,
+            gitops_signers: Vec::new(&env),
+            gitops_nonce: 0,
+            gitops_window_ledgers: 0,
         };
         // 1_100_000 → 10% deviation → blocked
         let result = assert_twap_within_policy(&policy, 1_100_000);
         assert_eq!(result, Err(PolicyError::TwapDeviationTooLarge));
+    }
+
+    // ---- GitOps policy helpers ----
+
+    fn gitops_policy(env: &soroban_sdk::Env, threshold: u32, signers: Vec<Address>) -> ExecutionPolicy {
+        ExecutionPolicy {
+            max_allowed_fee_stroops: 100,
+            twap_oracle: soroban_sdk::Address::generate(env),
+            reference_twap_price: 1_000_000,
+            max_price_deviation_bps: 500,
+            gitops_threshold: threshold,
+            gitops_signers: signers,
+            gitops_nonce: 7,
+            gitops_window_ledgers: 100,
+        }
+    }
+
+    #[test]
+    fn gitops_config_rejects_empty_signers() {
+        let env = soroban_sdk::Env::default();
+        let policy = gitops_policy(&env, 1, Vec::new(&env));
+        assert_eq!(
+            assert_gitops_config_valid(&policy),
+            Err(PolicyError::EmptyGitopsSignerSet)
+        );
+    }
+
+    #[test]
+    fn gitops_config_rejects_bad_threshold() {
+        let env = soroban_sdk::Env::default();
+        let mut signers = Vec::new(&env);
+        signers.push_back(soroban_sdk::Address::generate(&env));
+        let policy = gitops_policy(&env, 2, signers);
+        assert_eq!(
+            assert_gitops_config_valid(&policy),
+            Err(PolicyError::InvalidGitopsThreshold)
+        );
+    }
+
+    #[test]
+    fn gitops_config_accepts_valid() {
+        let env = soroban_sdk::Env::default();
+        let mut signers = Vec::new(&env);
+        signers.push_back(soroban_sdk::Address::generate(&env));
+        signers.push_back(soroban_sdk::Address::generate(&env));
+        let policy = gitops_policy(&env, 2, signers);
+        assert!(assert_gitops_config_valid(&policy).is_ok());
+    }
+
+    #[test]
+    fn gitops_signer_membership() {
+        let env = soroban_sdk::Env::default();
+        let member = soroban_sdk::Address::generate(&env);
+        let outsider = soroban_sdk::Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(member.clone());
+        let policy = gitops_policy(&env, 1, signers);
+        assert!(assert_gitops_signer(&policy, &member).is_ok());
+        assert_eq!(
+            assert_gitops_signer(&policy, &outsider),
+            Err(PolicyError::NotGitopsSigner)
+        );
+    }
+
+    #[test]
+    fn gitops_nonce_must_match() {
+        let env = soroban_sdk::Env::default();
+        let policy = gitops_policy(&env, 1, Vec::new(&env));
+        assert!(assert_gitops_nonce(&policy, 7).is_ok());
+        assert_eq!(
+            assert_gitops_nonce(&policy, 6),
+            Err(PolicyError::InvalidGitopsNonce)
+        );
+    }
+
+    #[test]
+    fn gitops_freshness_window() {
+        let env = soroban_sdk::Env::default();
+        let policy = gitops_policy(&env, 1, Vec::new(&env));
+        // Within window.
+        assert!(assert_gitops_fresh(&policy, 1_000, 1_050).is_ok());
+        // Exactly at window boundary is still fresh.
+        assert!(assert_gitops_fresh(&policy, 1_000, 1_100).is_ok());
+        // Beyond window is stale.
+        assert_eq!(
+            assert_gitops_fresh(&policy, 1_000, 1_101),
+            Err(PolicyError::StaleGitopsApproval)
+        );
+    }
+
+    #[test]
+    fn gitops_payload_must_be_nonempty() {
+        let env = soroban_sdk::Env::default();
+        let empty = soroban_sdk::Bytes::new(&env);
+        assert_eq!(
+            assert_gitops_payload_nonempty(&empty),
+            Err(PolicyError::EmptyGitopsPayload)
+        );
+        let mut data = soroban_sdk::Bytes::new(&env);
+        data.push_back(0xab);
+        assert!(assert_gitops_payload_nonempty(&data).is_ok());
+    }
+
+    #[test]
+    fn gitops_threshold_met() {
+        let env = soroban_sdk::Env::default();
+        let policy = gitops_policy(&env, 2, Vec::new(&env));
+        assert!(assert_gitops_threshold_met(&policy, 2).is_ok());
+        assert_eq!(
+            assert_gitops_threshold_met(&policy, 1),
+            Err(PolicyError::ThresholdNotMet)
+        );
     }
 }

@@ -29,7 +29,7 @@
 //! stroops).  The oracle address is stored inside [`ExecutionPolicy`] and
 //! validated every time a transfer is executed.
 
-use soroban_sdk::{token::Client as TokenClient, Address, Env, Symbol, Val, Vec};
+use soroban_sdk::{token::Client as TokenClient, Address, BytesN, Env, Symbol, Val, Vec};
 
 use crate::policy::{
     assert_fee_within_policy, assert_twap_within_policy, load_policy, load_signatures,
@@ -228,4 +228,126 @@ pub fn next_tx_id(env: &Env) -> u64 {
         .instance()
         .set(&DataKey::TxCounter, &next);
     next
+}
+
+// ---------------------------------------------------------------------------
+// Infrastructure payload approvals (GitOps bridge)
+// ---------------------------------------------------------------------------
+
+/// Storage key for the monotonically increasing GitOps approval nonce.
+///
+/// Kept in Instance Storage so that a nonce can never be reused across
+/// payloads: every successful threshold crossing burns exactly one nonce.
+fn gitops_nonce_key() -> DataKey {
+    DataKey::TxCounter
+}
+
+/// Return the current GitOps approval nonce.
+///
+/// The nonce starts at `0` and is incremented once per emitted payload.  A
+/// consumer (e.g. a GitHub Actions listener) can use it to reject replayed
+/// events: any event carrying a nonce `<=` the last observed nonce must be
+/// discarded.
+pub fn current_gitops_nonce(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&gitops_nonce_key())
+        .unwrap_or(0u64)
+}
+
+/// Record a signer's approval for an infrastructure payload hash.
+///
+/// Approvals are keyed by `(payload_hash, nonce)` so that the same payload
+/// hash cannot be re-approved after a nonce burn (replay prevention), and
+/// duplicate approvals from the same signer collapse to a single entry.
+///
+/// # Arguments
+///
+/// * `signer`       — the approving address; must be in the wallet signer set.
+/// * `payload_hash` — 32-byte hash of the off-chain payload (IPFS CID digest
+///   or Git commit SHA), never the raw manifest.
+/// * `nonce`        — the nonce the caller believes is current.  Must equal
+///   [`current_gitops_nonce`]; otherwise the approval is rejected as stale.
+///
+/// # Errors
+///
+/// * [`PolicyError::NotInitialized`] — signer set not configured.
+/// * [`PolicyError::Unauthorized`] — `signer` is not in the signer set.
+/// * [`PolicyError::InvalidNonce`] — `nonce` does not match the live nonce.
+///
+/// Returns the number of distinct valid approvals collected so far.
+pub fn record_payload_approval(
+    env: &Env,
+    signer: &Address,
+    payload_hash: &BytesN<32>,
+    nonce: u64,
+) -> Result<u32, PolicyError> {
+    let signers = load_signers(env)?;
+    if !signers.contains(signer) {
+        return Err(PolicyError::Unauthorized);
+    }
+    if nonce != current_gitops_nonce(env) {
+        return Err(PolicyError::InvalidNonce);
+    }
+
+    let key = DataKey::PayloadApprovals(payload_hash.clone(), nonce);
+    let mut approvals: soroban_sdk::Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+    // Duplicate-signer collapse: an address may only appear once.
+    if !approvals.contains(signer) {
+        approvals.push_back(signer.clone());
+        env.storage().persistent().set(&key, &approvals);
+    }
+
+    Ok(approvals.len())
+}
+
+/// Return the number of distinct approvals recorded for `payload_hash` at
+/// `nonce`.
+pub fn payload_approval_count(env: &Env, payload_hash: &BytesN<32>, nonce: u64) -> u32 {
+    let key = DataKey::PayloadApprovals(payload_hash.clone(), nonce);
+    let approvals: soroban_sdk::Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+    approvals.len()
+}
+
+/// Verify that `payload_hash` has collected at least `threshold` distinct
+/// approvals at the current nonce.
+///
+/// # Errors
+///
+/// * [`PolicyError::ThresholdNotMet`] — fewer distinct approvals than required.
+pub fn assert_payload_threshold_met(
+    env: &Env,
+    payload_hash: &BytesN<32>,
+    threshold: u32,
+) -> Result<(), PolicyError> {
+    let nonce = current_gitops_nonce(env);
+    if payload_approval_count(env, payload_hash, nonce) < threshold {
+        return Err(PolicyError::ThresholdNotMet);
+    }
+    Ok(())
+}
+
+/// Burn the current GitOps nonce after a payload has been emitted.
+///
+/// Must be called exactly once per emitted payload, after
+/// [`assert_payload_threshold_met`] succeeds.  Incrementing the nonce makes
+/// every previously collected approval stale, preventing replay of the same
+/// payload hash.
+///
+/// Returns the nonce that was burned.
+pub fn burn_gitops_nonce(env: &Env) -> u64 {
+    let burned = current_gitops_nonce(env);
+    env.storage()
+        .instance()
+        .set(&gitops_nonce_key(), &burned.saturating_add(1));
+    burned
 }

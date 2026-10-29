@@ -48,6 +48,11 @@ pub mod merkle;
 mod types;
 pub mod xdr_parser;
 
+/// Maximum number of sibling hashes accepted in a single inclusion proof.
+/// Bounds the SHA-256 loop so a proof can never exceed the transaction CPU
+/// ceiling (2^16 leaves is far beyond any real Stellar ledger).
+pub const MAX_PROOF_DEPTH: u32 = 16;
+
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
@@ -204,6 +209,9 @@ fn verify_inclusion(
         .unwrap_or_else(|| panic_with_error!(env, VerifierError::ResultsNotCommitted));
     if index >= commitment.tx_count {
         panic_with_error!(env, VerifierError::IndexOutOfRange);
+    }
+    if commitment.depth > MAX_PROOF_DEPTH {
+        panic_with_error!(env, VerifierError::TooManyTransactions);
     }
     if proof.len() != 32 * commitment.depth {
         panic_with_error!(env, VerifierError::InvalidProofLength);
@@ -498,6 +506,74 @@ impl StateVerifier {
         let buf = envelope_xdr.to_alloc_vec();
         let envelope = xdr_parser::parse_envelope(&buf).unwrap_or_else(|e| xdr_error(&env, e));
         bytes32(&env, &envelope_hash(&env, &envelope))
+    }
+
+    /// Light-client entrypoint: verifies a state payload against an anchored
+    /// Merkle root. `payload` is hashed with SHA-256 and proven to be the
+    /// leaf at `index` under the results root committed for `ledger_seq`.
+    /// Returns the verified transaction record on success.
+    pub fn verify_state(
+        env: Env,
+        ledger_seq: u32,
+        payload: Bytes,
+        result_code: i32,
+        index: u32,
+        proof: Bytes,
+    ) -> VerifiedTransaction {
+        let tx_hash: [u8; 32] = env.crypto().sha256(&payload).to_array();
+        verify_inclusion(&env, ledger_seq, &tx_hash, result_code, index, &proof)
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof registry
+    // -----------------------------------------------------------------------
+
+    /// Submits a state proof for immediate mathematical validation. The proof
+    /// is checked against the anchored root; on success the submitter and the
+    /// proven leaf are recorded so other protocols can query it.
+    pub fn submit_proof(
+        env: Env,
+        submitter: Address,
+        ledger_seq: u32,
+        tx_hash: BytesN<32>,
+        result_code: i32,
+        index: u32,
+        proof: Bytes,
+    ) -> VerifiedTransaction {
+        submitter.require_auth();
+        bump_instance(&env);
+        let verified = verify_inclusion(
+            &env,
+            ledger_seq,
+            &tx_hash.to_array(),
+            result_code,
+            index,
+            &proof,
+        );
+        let key = DataKey::Proof(ledger_seq, index);
+        if read_persistent::<ProofRecord>(&env, &key).is_none() {
+            let record = ProofRecord {
+                submitter: submitter.clone(),
+                ledger_seq,
+                tx_hash: tx_hash.clone(),
+                result_code,
+                index,
+            };
+            write_persistent(&env, &key, &record);
+            ProofSubmitted {
+                submitter,
+                ledger_seq,
+                tx_hash,
+                index,
+            }
+            .publish(&env);
+        }
+        verified
+    }
+
+    /// Returns the registered proof for `(ledger_seq, index)`, if any.
+    pub fn proof(env: Env, ledger_seq: u32, index: u32) -> Option<ProofRecord> {
+        read_persistent(&env, &DataKey::Proof(ledger_seq, index))
     }
 
     // -----------------------------------------------------------------------

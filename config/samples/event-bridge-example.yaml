@@ -1,0 +1,82 @@
+# Copyright 2024 Stellar-K8s Contributors
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Kafka Event Streaming Bridge (issue #292)
+#
+# Streams Horizon ledger events (ledger closes, token transfers, Soroban
+# contract events) into Kafka with exactly-once semantics. See
+# docs/event-bridge.md for the full configuration reference.
+#
+# Apply with:
+#   kubectl apply -f config/samples/event-bridge-example.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-bridge-config
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-event-bridge
+data:
+  EVENT_BRIDGE_HORIZON_URL: "http://horizon.stellar.svc.cluster.local:8000"
+  KAFKA_BROKERS: "kafka-cluster-kafka-bootstrap.kafka:9092"
+  EVENT_BRIDGE_TOPIC: "stellar-ledger-events"
+  EVENT_BRIDGE_CHECKPOINT_TOPIC: "stellar-ledger-events.checkpoints"
+  # Unique per active bridge instance; part of the Kafka transactional.id so
+  # a restarted pod fences its zombie predecessor (exactly-once guarantee).
+  EVENT_BRIDGE_ID: "mainnet-bridge-0"
+  EVENT_BRIDGE_START_LEDGER: "1"
+  RUST_LOG: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-bridge
+  namespace: stellar-system
+  labels:
+    app.kubernetes.io/name: stellar-event-bridge
+spec:
+  # Exactly-once relies on a single active writer per bridge id. Scale beyond
+  # 1 replica only with distinct EVENT_BRIDGE_ID values and disjoint ledger
+  # ranges.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stellar-event-bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stellar-event-bridge
+    spec:
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: event-bridge
+          image: stellar-k8s/operator:latest # worker binary: stellar-event-bridge
+          command: ["/stellar-event-bridge"]
+          args: ["run"]
+          envFrom:
+            - configMapRef:
+                name: event-bridge-config
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # The worker is a streaming process without an HTTP endpoint; pod
+          # health derives from the process staying alive and Kafka
+          # transactions continuing to commit (watch the checkpoint topic).

@@ -119,9 +119,11 @@ nav:
     - Production Profiling Runbook: operations/profiling-runbook.md
     - Core Blue/Green Runbook: operations/core-blue-green-runbook.md
     - Split-Brain Recovery Runbook: operations/split-brain-recovery.md
+    - GitOps Disaster Recovery & State Rollback: operations/dr-gitops-rollback.md
     - OpenTelemetry Tracing: observability/tracing.md
     - Distributed Rate Limiting: distributed-rate-limiting.md
     - Feature Flag Rollouts: feature-flag-rollouts.md
+    - Kafka Event Streaming Bridge: event-bridge.md
   - Troubleshooting:
     - troubleshooting/index.md
     - Common Issues: troubleshooting/common-issues.md

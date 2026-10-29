@@ -190,6 +190,170 @@ spec:
     nodeSeed: "secret://stellar-validator-seed"
 ```
 
+### Validator Identity Rotation
+
+Long-lived validator seed keys become cryptographic liabilities over time. The operator automates rotation of ed25519 node identities using GitOps principles, pulling dynamically generated identities from an external secret store via the External Secrets Operator (ESO) and rotating them without jeopardizing quorum.
+
+#### How Rotation Works
+
+The rotation controller (`controller/src/security/rotation.rs`) coordinates with the ESO integration (`controller/src/security/eso_integration.rs`) to perform the following sequence for each node:
+
+1. Fetch the next ed25519 identity from the external secret store (AWS Secrets Manager or HashiCorp Vault).
+2. Gracefully un-peer the node from the consensus network.
+3. Update the ConfigMap with the new seed and restart the pod.
+4. Rejoin the consensus network and verify ledger advancement resumes.
+5. Propagate the rotated public key to any attached Horizon ingestion workers.
+
+#### External Secrets Operator Setup
+
+Install ESO and configure a `SecretStore` pointing at your secret backend:
+
+```yaml title="eso-secretstore.yaml"
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: validator-secrets
+  namespace: stellar-prod
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: stellar-validator
+```
+
+For HashiCorp Vault, use the `vault` provider with Kubernetes auth instead:
+
+```yaml title="eso-vault-secretstore.yaml"
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: validator-secrets
+  namespace: stellar-prod
+spec:
+  provider:
+    vault:
+      server: "https://vault.example.com"
+      path: "stellar"
+      version: "v2"
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "stellar-validator"
+          serviceAccountRef:
+            name: stellar-validator
+```
+
+Define an `ExternalSecret` that maps the dynamically generated node identity into a Kubernetes Secret consumed by the validator:
+
+```yaml title="validator-identity-externalsecret.yaml"
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: stellar-validator-seed
+  namespace: stellar-prod
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: validator-secrets
+    kind: SecretStore
+  target:
+    name: stellar-validator-seed
+    creationPolicy: Owner
+  data:
+    - secretKey: seed
+      remoteRef:
+        key: stellar/validators/prod-validator
+        property: seed
+```
+
+#### Rotation Policy
+
+Enable automated rotation in the validator spec:
+
+```yaml
+spec:
+  config:
+    nodeSeed: "secret://stellar-validator-seed"
+
+  identityRotation:
+    enabled: true
+    interval: "720h"          # 30-day rotation policy
+    secretStoreRef:
+      name: validator-secrets
+      kind: SecretStore
+    remoteKey: "stellar/validators/prod-validator"
+    # Stagger rotation across the cluster
+    staggerInterval: "10m"
+    maxUnavailable: 1
+    # Propagate rotated keys to Horizon ingestion workers
+    horizonPropagation:
+      enabled: true
+      databaseSecretRef: "horizon-db-credentials"
+```
+
+The `interval` field defines the rotation cadence (30 days in the example). The controller schedules rotations so that no more than `maxUnavailable` nodes are rotating at any time, waiting `staggerInterval` between each node.
+
+#### Staggered Multi-Node Behavior
+
+Key rotation must be staggered across a multi-node cluster to ensure quorum thresholds are never jeopardized during the restart sequence. The controller:
+
+- Rotates one node at a time, waiting `staggerInterval` between nodes.
+- Never rotates a node if doing so would drop the number of healthy validators below the quorum threshold.
+- Verifies ledger advancement after each node rejoins before proceeding to the next.
+- Aborts the rotation and rolls back if ledger advancement halts.
+
+For a 5-node testnet with a quorum threshold of 3, the controller rotates nodes sequentially, keeping at least 4 nodes online at all times.
+
+#### Quorum Safety Constraints
+
+The controller enforces the following constraints before and during rotation:
+
+- The number of simultaneously rotating nodes must never exceed `maxUnavailable`.
+- The remaining healthy validators must always satisfy the configured quorum threshold.
+- A node is only un-peered after its replacement identity is confirmed available in the external store.
+- If ledger advancement stalls for longer than the configured timeout, the rotation is rolled back to the previous identity.
+
+#### Horizon Database Key Propagation
+
+When a validator has attached Horizon ingestion workers, the rotated public key must be reflected in the Horizon database. With `horizonPropagation.enabled`, the controller updates the ingestion worker records automatically after a successful rotation, ensuring ingestion continues against the correct validator identity.
+
+#### Validation
+
+Trigger an automated 30-day rotation policy across a 5-node testnet and confirm all nodes successfully migrate identities without halting ledger advancement:
+
+```bash
+# Simulate a rotation cycle
+kubectl annotate stellarvalidator prod-validator -n stellar-prod \
+  stellar.k8s.io/rotate-now="$(date +%s)" --overwrite
+
+# Watch rotation progress
+kubectl get stellarvalidators -n stellar-prod -w
+kubectl logs -n stellar-prod -l app=stellar-operator -f | grep rotation
+```
+
+Confirm ledger advancement continues throughout:
+
+```promql
+stellar_core_ledger_age_seconds
+```
+
+#### Security Review Checklist
+
+A PR introducing or modifying rotation must include a comprehensive security review of the transit pathways between the external secret store and pod memory. Verify:
+
+- [ ] Secret transit uses TLS/mTLS between the external store, ESO, and the API server.
+- [ ] Seeds are never written to logs, events, or ConfigMaps in plaintext.
+- [ ] Seeds are mounted as in-memory volumes (`emptyDir: { medium: Memory }`) and never persisted to disk.
+- [ ] The validator service account has least-privilege access to the secret store path only.
+- [ ] ESO `SecretStore` credentials are short-lived and rotated independently.
+- [ ] Pod memory containing the seed is protected by `readOnlyRootFilesystem` and dropped capabilities.
+- [ ] Rotation audit events are recorded without exposing key material.
+- [ ] Rollback paths do not retain stale seeds beyond the rotation window.
+
 ### Quorum Configuration
 
 Configure trusted validators for consensus:

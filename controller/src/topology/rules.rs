@@ -1,4 +1,4 @@
-//! Topology spread and anti-affinity rule generation for node workloads.
+h//! Topology spread and anti-affinity rule generation for node workloads.
 //!
 //! This module turns observed availability-zone capacity into Kubernetes
 //! scheduling rules. Hard enforcement is only emitted when the cluster has

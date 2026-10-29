@@ -8,6 +8,32 @@ Stellar history archives grow continuously as new checkpoints are created every 
 
 The `prune-archive` utility provides safe, automated pruning with multiple safety guarantees to prevent accidental data loss.
 
+## Local Core bucket-volume maintenance
+
+The separate `controller` crate exposes a local bucket scanner and asynchronous
+pruner in `controller/src/maintenance`. It reads `BUCKET_DIR_PATH` from the
+Stellar Core TOML configuration; the default retention window is 30 days, and
+pruning is dry-run by default.
+
+The pruner does **not** infer that a bucket file is old from its filename or
+modification time. It will only consider a bucket file for deletion when a
+fresh, complete safety snapshot supplied by the caller explicitly identifies it
+as obsolete. Ledger XDR files are considered by ledger sequence and the
+configured retention window. The snapshot must include live Core/quorum
+references, pending catchup, requirements of every attached Horizon node, and
+active queries. If the snapshot is incomplete or any protected path cannot be
+resolved, pruning fails closed.
+
+Active-reader locking uses a cooperative shared/exclusive file-lock protocol.
+Readers that use `FileReadGuard` are preserved by the pruner. Stellar Core and
+Horizon are not wired to this helper by the operator today, so destructive
+pruning must not be enabled until the deployment's inventory provider and
+reader-lock integration are in place and verified. In particular, the local
+pruner is not a replacement for Stellar Core's own bucket lifecycle management.
+The 30-day ledger conversion is an estimate (17,280 ledgers/day); operators
+must ensure the safety snapshot's required-ledger floor is at least as old as
+every attached consumer requires.
+
 ## Safety Guarantees
 
 The pruning utility implements multiple layers of protection:

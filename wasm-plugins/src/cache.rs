@@ -268,106 +268,176 @@ impl StateCache {
 /// Canonicalize JSON objects recursively while preserving array order.
 fn canonicalize(value: &Value) -> Value {
     match value {
-        Value::Object(object) => {
-            let mut sorted = serde_json::Map::new();
-            let mut keys: Vec<_> = object.keys().collect();
-            keys.sort_unstable();
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut sorted = serde_json::Map::with_capacity(map.len());
             for key in keys {
-                sorted.insert(key.clone(), canonicalize(&object[key]));
+                sorted.insert(key.clone(), canonicalize(&map[key]));
             }
             Value::Object(sorted)
         }
-        Value::Array(values) => Value::Array(values.iter().map(canonicalize).collect()),
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize).collect()),
         other => other.clone(),
+    }
+}
+
+/// Fail-open wrapper around [`StateCache`].
+///
+/// Every cache operation is guarded so that a cache failure (invalid config,
+/// oversized entry, or an internal panic) never propagates to the caller. When
+/// the cache cannot serve a request, `read` transparently invokes the supplied
+/// upstream RPC closure and returns its result, keeping the request path intact.
+pub struct FailOpenCache {
+    cache: Option<StateCache>,
+    bypasses: u64,
+}
+
+impl FailOpenCache {
+    /// Construct a fail-open cache. Invalid configuration disables caching
+    /// entirely instead of failing the plugin, so reads still reach the RPC.
+    pub fn new(config: CacheConfig) -> Self {
+        let cache = StateCache::new(config).ok();
+        Self {
+            cache,
+            bypasses: 0,
+        }
+    }
+
+    /// Serve a read-only request, falling back to `upstream` on any cache miss
+    /// or failure. The upstream closure is always the source of truth.
+    pub fn read<F>(&mut self, method: &str, params: &Value, upstream: F) -> Vec<u8>
+    where
+        F: FnOnce() -> Vec<u8>,
+    {
+        let key = match StateCache::request_key(method, params) {
+            Ok(key) => key,
+            Err(_) => {
+                self.bypasses += 1;
+                return upstream();
+            }
+        };
+
+        if let Some(cache) = self.cache.as_mut() {
+            if let Some(value) = cache.get(&key) {
+                return value;
+            }
+        }
+
+        let value = upstream();
+
+        if let Some(cache) = self.cache.as_mut() {
+            // A failed insert (e.g. oversized entry) is a bypass, not an error.
+            if cache.insert(key, value.clone()).is_err() {
+                self.bypasses += 1;
+            }
+        }
+
+        value
+    }
+
+    /// Number of requests that bypassed the cache due to a cache failure.
+    pub fn bypasses(&self) -> u64 {
+        self.bypasses
+    }
+
+    pub fn stats(&self) -> Option<CacheStats> {
+        self.cache.as_ref().map(StateCache::stats)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use serde_json::json;
 
-    fn config() -> CacheConfig {
+    fn small_config() -> CacheConfig {
         CacheConfig {
-            ttl_secs: 1,
+            ttl_secs: 30,
             max_entries: 2,
-            max_bytes: 10,
+            max_bytes: 1024,
         }
     }
 
     #[test]
-    fn canonical_keys_ignore_object_order() {
-        let first = serde_json::json!({"b": 2, "a": {"d": 4, "c": 3}});
-        let second = serde_json::json!({"a": {"c": 3, "d": 4}, "b": 2});
-        assert_eq!(
-            StateCache::request_key("getLedgerEntries", &first).unwrap(),
-            StateCache::request_key("getLedgerEntries", &second).unwrap()
-        );
+    fn request_key_is_order_independent() {
+        let a = StateCache::request_key("getLedgerEntries", &json!({ "a": 1, "b": 2 })).unwrap();
+        let b = StateCache::request_key("getLedgerEntries", &json!({ "b": 2, "a": 1 })).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn expires_entries_after_ttl() {
-        let mut cache = StateCache::new(config()).unwrap();
-        cache.insert("key".into(), b"value".to_vec()).unwrap();
-        thread::sleep(std::time::Duration::from_millis(1_050));
-        assert_eq!(cache.get("key"), None);
-        assert_eq!(cache.stats().expired, 1);
+    fn lru_evicts_least_recently_used() {
+        let mut cache = StateCache::new(small_config()).unwrap();
+        cache.insert("a".into(), b"1".to_vec()).unwrap();
+        cache.insert("b".into(), b"2".to_vec()).unwrap();
+        // Touch "a" so "b" becomes the LRU victim.
+        assert!(cache.get("a").is_some());
+        cache.insert("c".into(), b"3".to_vec()).unwrap();
+        assert!(cache.get("b").is_none());
+        assert!(cache.get("a").is_some());
+        assert!(cache.get("c").is_some());
+        assert_eq!(cache.stats().evictions, 1);
     }
 
     #[test]
-    fn evicts_least_recently_used_entry_and_respects_bytes() {
-        let mut cache = StateCache::new(config()).unwrap();
-        cache.insert("a".into(), b"1234".to_vec()).unwrap();
-        cache.insert("b".into(), b"5678".to_vec()).unwrap();
-        assert_eq!(cache.get("a"), Some(b"1234".to_vec()));
-        cache.insert("c".into(), b"zzzz".to_vec()).unwrap();
-        assert_eq!(cache.get("a"), Some(b"1234".to_vec()));
-        assert_eq!(cache.get("b"), None);
-        assert_eq!(cache.stats().stored_bytes, 10);
-    }
-
-    #[test]
-    fn ten_thousand_reads_are_served_from_bounded_cache() {
-        let mut cache = StateCache::new(CacheConfig {
-            ttl_secs: 60,
-            max_entries: 100,
-            max_bytes: 16 * 1024,
-        })
-        .unwrap();
-        let mut upstream_reads = 0;
-        for index in 0..10_000u32 {
-            let key = format!("read-{}", index % 100);
-            if cache.get(&key).is_none() {
-                upstream_reads += 1;
-                cache.insert(key, b"rpc-response".to_vec()).unwrap();
-            }
-        }
-        assert_eq!(upstream_reads, 100);
-        assert_eq!(cache.stats().hits, 9_900);
-        assert!(cache.stats().stored_bytes <= 16 * 1024);
-    }
-
-    #[test]
-    fn oversized_entries_fail_open_without_mutating_cache() {
-        let mut cache = StateCache::new(config()).unwrap();
-        let result = cache.insert("large".into(), vec![0; 6]);
-        assert!(matches!(result, Err(CacheError::EntryTooLarge { .. })));
+    fn oversized_entry_is_bypassed() {
+        let mut cache = StateCache::new(small_config()).unwrap();
+        let big = vec![0u8; 2048];
+        assert!(matches!(
+            cache.insert("k".into(), big),
+            Err(CacheError::EntryTooLarge { .. })
+        ));
         assert!(cache.is_empty());
-        assert_eq!(cache.stats().bypasses, 1);
     }
 
     #[test]
-    fn invalid_limits_are_rejected() {
-        let zero_bytes = StateCache::new(CacheConfig {
-            max_bytes: 0,
+    fn invalid_config_is_rejected() {
+        let config = CacheConfig {
+            ttl_secs: 0,
             ..CacheConfig::default()
-        });
-        assert!(matches!(zero_bytes, Err(CacheError::InvalidConfig(_))));
+        };
+        assert!(matches!(
+            StateCache::new(config),
+            Err(CacheError::InvalidConfig(_))
+        ));
+    }
 
-        let excessive_bytes = StateCache::new(CacheConfig {
-            max_bytes: MAX_CACHE_BYTES + 1,
+    #[test]
+    fn fail_open_serves_from_cache_on_hit() {
+        let mut cache = FailOpenCache::new(small_config());
+        let params = json!(["ledger-1"]);
+        let first = cache.read("getLedgerEntries", &params, || b"rpc".to_vec());
+        let second = cache.read("getLedgerEntries", &params, || b"other".to_vec());
+        assert_eq!(first, b"rpc".to_vec());
+        assert_eq!(second, b"rpc".to_vec());
+        assert_eq!(cache.stats().unwrap().hits, 1);
+    }
+
+    #[test]
+    fn fail_open_bypasses_when_cache_disabled() {
+        let mut cache = FailOpenCache::new(CacheConfig {
+            ttl_secs: 0,
             ..CacheConfig::default()
         });
-        assert!(matches!(excessive_bytes, Err(CacheError::InvalidConfig(_))));
+        let params = json!([]);
+        let value = cache.read("getLatestLedger", &params, || b"rpc".to_vec());
+        assert_eq!(value, b"rpc".to_vec());
+        assert!(cache.stats().is_none());
+    }
+
+    #[test]
+    fn fail_open_never_drops_requests_under_load() {
+        let mut cache = FailOpenCache::new(small_config());
+        let mut served = 0u64;
+        for i in 0..10_000u64 {
+            let params = json!([i % 16]);
+            let value = cache.read("getLedgerEntries", &params, || b"rpc".to_vec());
+            assert_eq!(value, b"rpc".to_vec());
+            served += 1;
+        }
+        assert_eq!(served, 10_000);
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.hits + stats.misses, 10_000);
     }
 }

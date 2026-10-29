@@ -1,0 +1,53 @@
+{
+  "type": "record",
+  "name": "LedgerEvent",
+  "namespace": "org.stellar.eventbridge",
+  "doc": "Canonical ledger event streamed by the Stellar-K8s Kafka event bridge (issue #292). The JSON wire encoding of the Rust LedgerEvent struct is a lossless projection of this schema; the Kafka record key is the partition key (asset code, contract ID, or ledger sequence).",
+  "fields": [
+    { "name": "event_id", "type": "string", "doc": "Deterministic SHA-256 of <ledger_hash>:<discriminator>" },
+    { "name": "ledger", "type": "long", "doc": "Ledger sequence number" },
+    { "name": "ledger_hash", "type": "string", "doc": "Ledger hash (hex) as reported by Horizon" },
+    { "name": "close_time", "type": "string", "doc": "Ledger close time, RFC 3339" },
+    {
+      "name": "kind",
+      "type": {
+        "type": "enum",
+        "name": "EventKind",
+        "symbols": ["ledger_close", "token_transfer", "contract_event"]
+      }
+    },
+    { "name": "tx_count", "type": ["null", "int"], "default": null, "doc": "ledger_close: transactions in the ledger set" },
+    { "name": "fee_pool", "type": ["null", "string"], "default": null, "doc": "ledger_close: fees collected (stroops, decimal string)" },
+    { "name": "max_tx_set_size", "type": ["null", "int"], "default": null, "doc": "ledger_close: max operations the ledger could hold" },
+    { "name": "from", "type": ["null", "string"], "default": null, "doc": "token_transfer: sender account" },
+    { "name": "to", "type": ["null", "string"], "default": null, "doc": "token_transfer: recipient account" },
+    {
+      "name": "asset",
+      "type": [
+        "null",
+        {
+          "type": "record",
+          "name": "AssetId",
+          "fields": [
+            { "name": "type", "type": { "type": "enum", "name": "AssetType", "symbols": ["Native", "Credit"] } },
+            { "name": "code", "type": ["null", "string"], "default": null },
+            { "name": "issuer", "type": ["null", "string"], "default": null }
+          ]
+        }
+      ],
+      "default": null,
+      "doc": "token_transfer: asset that moved"
+    },
+    { "name": "amount", "type": ["null", "string"], "default": null, "doc": "token_transfer: decimal amount exactly as Horizon reports it (7 dp)" },
+    { "name": "amount_stroops", "type": ["null", "string"], "default": null, "doc": "token_transfer: amount in stroops (integer string)" },
+    { "name": "operation_index", "type": ["null", "int"], "default": null, "doc": "token_transfer: 0-based operation index in the transaction" },
+    { "name": "contract_id", "type": ["null", "string"], "default": null, "doc": "contract_event: emitting Soroban contract" },
+    { "name": "event_type", "type": ["null", "string"], "default": null, "doc": "contract_event: fn / diagnostic / ..." },
+    { "name": "topics", "type": { "type": "array", "items": "string" }, "default": [], "doc": "contract_event: base64 XDR topics" },
+    { "name": "data_xdr", "type": ["null", "string"], "default": null, "doc": "contract_event: base64 XDR event data" },
+    { "name": "event_index", "type": ["null", "int"], "default": null, "doc": "contract_event: 0-based event index in the transaction" },
+    { "name": "tx_hash", "type": ["null", "string"], "default": null, "doc": "Source transaction hash" },
+    { "name": "envelope_xdr", "type": ["null", "string"], "default": null, "doc": "Base64 envelope XDR of the source transaction (fidelity passthrough)" },
+    { "name": "result_xdr", "type": ["null", "string"], "default": null, "doc": "Base64 result XDR of the source transaction (fidelity passthrough)" }
+  ]
+}

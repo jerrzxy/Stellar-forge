@@ -18,6 +18,7 @@ use tracing::{info, info_span, warn, Level};
 #[cfg(feature = "admission-webhook")]
 pub async fn run_webhook(args: WebhookArgs) -> Result<(), Error> {
     use crate::webhook::{runtime::WasmRuntime, server::WebhookServer};
+    use controller::webhook::{AdmissionServer, WasmRunner};
 
     let log_format = match args.log_format {
         LogFormat::Json => LogOutputFormat::Json,
@@ -49,6 +50,46 @@ pub async fn run_webhook(args: WebhookArgs) -> Result<(), Error> {
         .parse()
         .map_err(|e| Error::ConfigError(format!("Invalid bind address: {e}")))?;
 
+    // ── Initialize the controller-crate WASM policy runner ────────────────────
+    // The WasmRunner (controller crate) provides the sandboxed policy-evaluation
+    // layer.  The WebhookServer (root crate) provides TLS + AdmissionReview
+    // request handling.  Plugins can be hot-loaded from ConfigMaps via
+    // POST /plugins at runtime.
+    let wasm_runner = WasmRunner::new()
+        .map_err(|e| Error::ConfigError(format!("Failed to initialize WASM policy runner: {e}")))?;
+
+    let admission_server = AdmissionServer::new(wasm_runner);
+
+    // Auto-load any plugin paths specified via the WASM_POLICY_PLUGIN_PATH env var
+    // (colon-separated list of file paths to compiled .wasm binaries).
+    if let Ok(plugin_paths) = std::env::var("WASM_POLICY_PLUGIN_PATH") {
+        for path in plugin_paths.split(':').filter(|p| !p.is_empty()) {
+            let plugin_name = std::path::Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(path)
+                .to_string();
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let fail_open = std::env::var("WASM_POLICY_FAIL_OPEN")
+                        .map(|v| v == "true" || v == "1")
+                        .unwrap_or(false);
+                    match admission_server.state().load_plugin(&plugin_name, &bytes, fail_open).await {
+                        Ok(()) => info!(plugin = %plugin_name, path = %path, "loaded WASM policy plugin from env"),
+                        Err(e) => warn!(plugin = %plugin_name, error = %e, "failed to load WASM plugin from {path}"),
+                    }
+                }
+                Err(e) => warn!(path = %path, error = %e, "failed to read WASM plugin file"),
+            }
+        }
+    }
+
+    info!(
+        plugins_loaded = admission_server.state().plugin_count().await,
+        "WASM policy admission server initialised"
+    );
+
+    // ── Initialize the root-crate Webhook server (TLS + AdmissionReview) ──────
     let runtime = WasmRuntime::new()
         .map_err(|e| Error::ConfigError(format!("Failed to initialize Wasm runtime: {e}")))?;
 

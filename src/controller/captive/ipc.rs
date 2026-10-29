@@ -16,3 +16,19 @@ pub async fn probe_http(client: &Client, endpoint: &str, timeout: Duration) -> R
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
+
+/// Alias for [`probe_http`] using IPC terminology.
+pub async fn probe_ipc(client: &Client, endpoint: &str, timeout: Duration) -> Result<(), String> {
+    probe_http(client, endpoint, timeout).await
+}
+
+/// Convenience probe that owns its HTTP client.
+pub async fn probe_endpoint(endpoint: &str, timeout: Duration) -> Result<(), String> {
+    let client = Client::new();
+    probe_http(&client, endpoint, timeout).await
+}
+
+/// Backwards-friendly name used by some callers.
+pub async fn check_ipc(client: &Client, endpoint: &str, timeout: Duration) -> Result<(), String> {
+    probe_http(client, endpoint, timeout).await
+}

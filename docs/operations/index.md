@@ -31,6 +31,7 @@ Key signals to monitor:
 - Use Kubernetes snapshots or storage-provider backups for data recovery.
 - Test restore workflows in a staging environment.
 - Follow the [Backup and Disaster Recovery Runbook](../backup-disaster-recovery-runbook.md) for checklists and step-by-step restore procedures.
+- To force a corrupted GitOps deployment back to a known-good state, follow the [GitOps Disaster Recovery & State Rollback](dr-gitops-rollback.md) runbook.
 
 ## Troubleshooting Common Issues
 

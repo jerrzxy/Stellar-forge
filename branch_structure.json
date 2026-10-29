@@ -1,12 +1,14 @@
 {
   "default_branch": "main",
   "branches": [
+    "feat/issue-244-enhancement-real-time-configmap-hot-reloader",
     "feat/issue-286-enhancement-gitops-deployment-engine-for",
     "fix/issue-317-enhancement-webgl-based-validator-topology",
     "main",
     "origin"
   ],
   "parent": {
+    "feat/issue-244-enhancement-real-time-configmap-hot-reloader": "main",
     "feat/issue-286-enhancement-gitops-deployment-engine-for": "main",
     "fix/issue-317-enhancement-webgl-based-validator-topology": "main",
     "main": null,
@@ -14,6 +16,7 @@
   },
   "order": [
     "main",
+    "feat/issue-244-enhancement-real-time-configmap-hot-reloader",
     "feat/issue-286-enhancement-gitops-deployment-engine-for",
     "fix/issue-317-enhancement-webgl-based-validator-topology",
     "origin"

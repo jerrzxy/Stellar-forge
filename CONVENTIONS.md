@@ -21,6 +21,7 @@ Stellar-K8s/
 │   ├── manifests/       OLM CSV bases and Gatekeeper policies
 │   └── dev/             Local dev kubeconfigs (not for production)
 ├── docs/                All project documentation (see mkdocs.yml)
+├── event-bridge/        Kafka event streaming bridge workspace crate (issue #292)
 ├── examples/            Ready-to-use StellarNode manifests
 ├── monitoring/          Grafana dashboards and Prometheus alert rules
 ├── policy/              CEL and OPA policies

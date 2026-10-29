@@ -25,14 +25,24 @@ use proposal::{
     apply_ballot, quorum_met, quorum_threshold, Ballot, Proposal, ProposalState, Tally, Vote,
 };
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, symbol_short, Address, Env, Symbol,
+    contract, contractclient, contracterror, contractevent, contractimpl, symbol_short, Address,
+    BytesN, Env, Symbol,
 };
+
+/// Minimal client interface for the GitOps manager contract. The governance
+/// contract forwards approved infrastructure payload hashes to it so that the
+/// manager can aggregate multi-sig approvals and emit the webhook event.
+#[contractclient(name = "GitOpsManagerClient")]
+pub trait GitOpsManager {
+    fn submit_payload(env: Env, payload_hash: BytesN<32>, proposal_id: u32);
+}
 
 const INSTANCE_ADMIN: Symbol = symbol_short!("_admin");
 const INSTANCE_TOTAL_WEIGHT: Symbol = symbol_short!("_total");
 const INSTANCE_QUORUM_BPS: Symbol = symbol_short!("_quorum");
 const INSTANCE_HORIZON: Symbol = symbol_short!("_horizon");
 const INSTANCE_COUNT: Symbol = symbol_short!("_count");
+const INSTANCE_GITOPS: Symbol = symbol_short!("_gitops");
 
 const KEY_PROPOSAL: Symbol = symbol_short!("PROP");
 const KEY_SETTING: Symbol = symbol_short!("SETTING");
@@ -58,6 +68,7 @@ pub enum GovernanceError {
     InvalidQuorum = 15,
     InvalidTotalWeight = 16,
     InvalidVoteWeight = 17,
+    GitOpsNotConfigured = 18,
 }
 
 #[contractevent]
@@ -175,6 +186,24 @@ impl GovernanceVote {
         admin(&env).require_auth();
         env.storage().instance().set(&INSTANCE_HORIZON, &new_horizon);
         refresh_instance_ttl(&env);
+    }
+
+    /// Configure (or clear) the GitOps manager contract that approved
+    /// proposals forward their payload hash to. Passing `None` disables the
+    /// hook.
+    pub fn set_gitops_manager(env: Env, manager: Option<Address>) {
+        admin(&env).require_auth();
+        let store = env.storage().instance();
+        match manager {
+            Some(addr) => store.set(&INSTANCE_GITOPS, &addr),
+            None => store.remove(&INSTANCE_GITOPS),
+        }
+        refresh_instance_ttl(&env);
+    }
+
+    /// The currently configured GitOps manager, if any.
+    pub fn gitops_manager(env: Env) -> Option<Address> {
+        env.storage().instance().get(&INSTANCE_GITOPS)
     }
 
     // ------------------------------------------------------------------
@@ -354,6 +383,38 @@ impl GovernanceVote {
             value: proposal.new_value,
         }
         .publish(&env);
+    }
+
+    /// Forward an approved infrastructure payload hash to the configured
+    /// GitOps manager. Only callable for a `Passed` proposal whose execution
+    /// timelock has elapsed, and only once per proposal (the manager is
+    /// responsible for its own replay protection as well).
+    ///
+    /// This is the bridge between on-chain governance and off-chain GitOps:
+    /// the manager aggregates the required Ed25519 signatures over
+    /// `payload_hash` and emits a webhook-compatible event.
+    pub fn forward_to_gitops(env: Env, proposal_id: u32, payload_hash: BytesN<32>) {
+        let store = env.storage().instance();
+        let proposal: Proposal = load_proposal(&env, proposal_id);
+        match proposal.state {
+            ProposalState::Passed => {}
+            ProposalState::Executed => env.panic_with_error(&GovernanceError::AlreadyExecuted),
+            ProposalState::Rejected | ProposalState::Expired => {
+                env.panic_with_error(&GovernanceError::CannotExecuteFailed)
+            }
+            ProposalState::Active => env.panic_with_error(&GovernanceError::NotPassed),
+        }
+        let current = env.ledger().sequence();
+        if !proposal.timelock_elapsed(current) {
+            env.panic_with_error(&GovernanceError::TimelockNotElapsed);
+        }
+        let manager: Address = store
+            .get(&INSTANCE_GITOPS)
+            .unwrap_or_else(|| env.panic_with_error(&GovernanceError::GitOpsNotConfigured));
+
+        let client = GitOpsManagerClient::new(&env, &manager);
+        client.submit_payload(&payload_hash, &proposal_id);
+        refresh_instance_ttl(&env);
     }
 
     /// Gracefully expire an abandoned proposal that is still `Active` well
@@ -694,6 +755,52 @@ mod tests {
             client.vote(&a, &999, &Vote::For, &100);
         }));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_forward_to_gitops_requires_passed_and_timelock() {
+        let (env, client, _, (a, _, _)) = setup(10_000, 6000, 100);
+        let manager = Address::generate(&env);
+        client.set_gitops_manager(&Some(manager.clone()));
+        assert_eq!(client.gitops_manager(), Some(manager));
+
+        env.ledger().set_sequence_number(100);
+        let id = client.propose(&a, &symbol_short!("gitops"), &symbol_short!("fee"), &1, &100, &50);
+        let hash = BytesN::from_array(&env, &[7u8; 32]);
+
+        // Active proposal cannot be forwarded.
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.forward_to_gitops(&id, &hash);
+        }));
+        assert!(err.is_err(), "forwarding an active proposal must panic");
+
+        client.vote(&a, &id, &Vote::For, &7000);
+        env.ledger().set_sequence_number(200);
+        client.finalize(&id);
+        assert_eq!(client.get_proposal(&id).unwrap().state, ProposalState::Passed);
+
+        // Timelock not yet elapsed (delay = 50).
+        env.ledger().set_sequence_number(249);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.forward_to_gitops(&id, &hash);
+        }));
+        assert!(err.is_err(), "forwarding before timelock must panic");
+    }
+
+    #[test]
+    fn test_forward_to_gitops_requires_manager() {
+        let (env, client, _, (a, _, _)) = setup(10_000, 6000, 100);
+        env.ledger().set_sequence_number(100);
+        let id = client.propose(&a, &symbol_short!("noman"), &symbol_short!("fee"), &1, &100, &10);
+        client.vote(&a, &id, &Vote::For, &7000);
+        env.ledger().set_sequence_number(200);
+        client.finalize(&id);
+        env.ledger().set_sequence_number(300);
+        let hash = BytesN::from_array(&env, &[1u8; 32]);
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.forward_to_gitops(&id, &hash);
+        }));
+        assert!(err.is_err(), "forwarding without a manager must panic");
     }
 
     #[test]

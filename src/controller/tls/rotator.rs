@@ -1,15 +1,14 @@
 //! Automated mTLS certificate rotation engine for the internal node mesh.
-//!
-//! The rotator decides when a peer certificate is close enough to expiry to be
-//! replaced and issues a fresh certificate signed by the mesh CA. It is a pure,
-//! side-effect-free engine: persisting the result to a `Secret` and signalling
-//! pods to reload is handled by [`crate::controller::mtls_rotation`].
+///
+/// The rotator decides when a peer certificate is close enough to expiry to be
+/// replaced and issues a fresh certificate signed by the mesh CA. It is a pure,
+/// side-effect-free engine: persisting the result to a `Secret` and signalling
+/// pods to reload is handled by [`crate::controller::mtls_rotation`].
 
-use crate::controller::tls::ca:{remaining_validity, CaCertificate};
+use crate::controller::tls::ca::{remaining_validity, CaCertificate};
 use crate::error::{Error, Result};
-use chrono::Datetime;
-use rcgen:
-{
+use chrono::Datelike;
+use rcgen::{
     CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, Ia5String, KeyPair,
     KeyUsagePurpose, SanName, SanType,
 };
@@ -39,11 +38,11 @@ impl Default for RotationPolicy {
 /// A freshly issued certificate bundle ready to be written to a `Secret`.
 #[derive(Debug, Clone)]
 pub struct RotatedCertificate {
-    /// PEM-encoded leaf certificate.
+    /// PEM encoded leaf certificate.
     pub cert_pem: String,
-    /// PEM-encoded leaf private key.
+    /// PEM encoded leaf private key.
     pub key_pem: String,
-    /// PEM-encoded issuing CA certificate.
+    /// PEM encoded issuing CA certificate.
     pub ca_cert_pem: String,
     /// Absolute expiry time of the issued leaf certificate.
     pub expires_at: SystemTime,
@@ -93,7 +92,7 @@ impl Rotator {
             .map_err(Error::CertificateError)?;
 
         let mut params = CertificateParams::default();
-        params.distinguishedName = DistinguishedName::new();
+        params.distinguished_name = DistinguishedName::new();
         params
             .distinguished_name
             .push(DnType::CommonName, "stellar-internal-node");
@@ -106,7 +105,7 @@ impl Rotator {
             .extended_key_usages
             .push(ExtendedKeyUsagePurpose::ClientAuth);
         for dns in dns_names {
-            params.subject_alt_names.push(SanType::DnsName(
+            params.subject_alt_names.push(SanName::DnsName(
                 Ia5String::try_from(dns.clone()).map_err(|e| Error::ConfigError(e.to_string()))?,
             ));
         }
@@ -136,7 +135,7 @@ impl Rotator {
     /// Run a full rotation against an ephemeral CA.
     ///
     /// Intended for local simulation and tests where no CA `Secret` exists yet;
-    /// production callers pass a real CA to [Self::issue_signed_certificate].
+    /// production callers pass a real CA to [`Self::issue_signed_certificate`].
     pub fn simulate_rotation_cycle(
         &self,
         cert_pem: &str,
@@ -165,7 +164,7 @@ mod tests {
 
     fn self_signed_cert(valid_for: chrono::Duration) -> String {
         let mut params = CertificateParams::default();
-        params.distinguishedName = DistinguishedName::new();
+        params.distinguished_name = DistinguishedName::new();
         params
             .distinguished_name
             .push(DnType::CommonName, "peer.internal");
@@ -203,7 +202,7 @@ mod tests {
         assert!(issued.expires_at > SystemTime::now());
     }
 
-    [test]
+    #[test]
     fn simulate_rotation_cycle_issues_fresh_certificate() {
         let expiring = self_signed_cert(chrono::Duration::days(-1));
         let rotator = Rotator::new(RotationPolicy::default());
@@ -214,7 +213,7 @@ mod tests {
         assert!(rotated.expires_at > SystemTime::now());
     }
 
-    [test]
+    #[test]
     fn simulate_rotation_cycle_rejects_healthy_certificate() {
         let healthy = self_signed_cert(chrono::Duration::days(60));
         let rotator = Rotator::new(RotationPolicy::default());

@@ -138,6 +138,14 @@ pub mod version_check;
 pub mod wasm;
 pub mod websocket_streaming;
 
+pub use crate::security::eso_integration::{
+    EsoProvider, EsoSecretStoreConfig, ExternalSecretStore, SecretStoreBackend,
+};
+pub use crate::security::rotation::{
+    NodeIdentity, RotationCoordinator, RotationPolicy, RotationState, RotationStatus,
+};
+pub use crate::wasm::sandbox_pool::{SandboxPool, SandboxPoolConfig};
+
 #[cfg(feature = "rest-api")]
 pub mod rest_api;
 

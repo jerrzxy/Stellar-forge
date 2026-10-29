@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use super::eso_integration::{EsoSeedResolver, ExternalSecretSeedSource};
 use super::vault::{
     AwsSecretsManagerBackend, AwsSecretsManagerConfig, ManagedSeedSecret, SecretManagerBackend,
     ValidatorSeedMaterial, VaultKv2Backend,
@@ -29,6 +30,9 @@ use crate::error::{Error, Result};
 
 const KEY_ROTATION_JOB_KIND: &str = "validator_key_rotation";
 const STELLAR_CORE_HTTP_PORT: u16 = 11626;
+const DEFAULT_ROTATION_PERIOD_DAYS: u64 = 30;
+const SECONDS_PER_DAY: u64 = 86_400;
+=======
 
 /// Operator-level configuration for automated validator key rotation.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
@@ -58,7 +62,21 @@ pub struct ValidatorKeyRotationConfig {
     /// AWS region override for Secrets Manager; otherwise the default AWS chain is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aws_region: Option<String>,
+    /// Automated rotation period in days. Zero disables the scheduled policy.
+    #[serde(default = "default_rotation_period_days")]
+    pub rotation_period_days: u64,
+    /// Minimum number of healthy validators that must remain online while a
+    /// single node is being rotated. Guards quorum during staggered restarts.
+    #[serde(default = "default_min_healthy_validators")]
+    pub min_healthy_validators: usize,
+    /// Delay between rotating consecutive nodes in a cluster sweep.
+    #[serde(default = "default_stagger_delay_secs")]
+    pub stagger_delay_secs: u64,
+    /// Update attached Horizon ingestion databases after a successful rotation.
+    #[serde(default = "default_update_horizon")]
+    pub update_horizon: bool,
 }
+=======
 
 impl Default for ValidatorKeyRotationConfig {
     fn default() -> Self {
@@ -71,9 +89,14 @@ impl Default for ValidatorKeyRotationConfig {
             max_unhealthy_samples: 0,
             rollback_on_failure: true,
             aws_region: None,
+            rotation_period_days: default_rotation_period_days(),
+            min_healthy_validators: default_min_healthy_validators(),
+            stagger_delay_secs: default_stagger_delay_secs(),
+            update_horizon: default_update_horizon(),
         }
     }
 }
+=======
 
 fn default_interval_secs() -> u64 {
     86_400
@@ -94,6 +117,23 @@ fn default_min_authenticated_peers() -> usize {
 fn default_rollback_on_failure() -> bool {
     true
 }
+
+fn default_rotation_period_days() -> u64 {
+    DEFAULT_ROTATION_PERIOD_DAYS
+}
+
+fn default_min_healthy_validators() -> usize {
+    1
+}
+
+fn default_stagger_delay_secs() -> u64 {
+    30
+}
+
+fn default_update_horizon() -> bool {
+    true
+}
+=======
 
 /// One consensus observation from Stellar Core.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,7 +178,45 @@ pub trait StellarCoreAdmin: Send + Sync {
     async fn consensus_snapshot(&self) -> Result<ConsensusSnapshot>;
     async fn apply_candidate(&self, candidate: &ManagedSeedSecret) -> Result<()>;
     async fn rollback_to_previous(&self, previous: &ManagedSeedSecret) -> Result<()>;
+    /// Gracefully remove the node from the consensus peer set before its seed
+    /// is replaced. Default is a no-op for backends without peer management.
+    async fn unpeer(&self) -> Result<()> {
+        Ok(())
+    }
+    /// Rejoin the consensus network after the new seed has been applied.
+    async fn rejoin(&self) -> Result<()> {
+        Ok(())
+    }
 }
+
+/// Hook invoked after a successful rotation so attached Horizon ingestion
+/// workers can be pointed at the rotated validator identity.
+#[async_trait]
+pub trait HorizonKeyUpdater: Send + Sync {
+    async fn update_validator_key(
+        &self,
+        namespace: &str,
+        node_name: &str,
+        new_public_key: &str,
+    ) -> Result<()>;
+}
+
+/// Default no-op Horizon updater used when Horizon integration is disabled.
+#[derive(Clone, Debug, Default)]
+pub struct NoopHorizonKeyUpdater;
+
+#[async_trait]
+impl HorizonKeyUpdater for NoopHorizonKeyUpdater {
+    async fn update_validator_key(
+        &self,
+        _namespace: &str,
+        _node_name: &str,
+        _new_public_key: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+=======
 
 /// HTTP implementation for Stellar Core's local admin API.
 #[derive(Clone)]
@@ -348,7 +426,9 @@ pub struct KeyRotationWorker {
     backend: Arc<dyn SecretManagerBackend>,
     admin: Arc<dyn StellarCoreAdmin>,
     seed_generator: Arc<dyn SeedGenerator>,
+    horizon_updater: Arc<dyn HorizonKeyUpdater>,
 }
+=======
 
 impl KeyRotationWorker {
     pub fn new(
@@ -365,6 +445,7 @@ impl KeyRotationWorker {
             backend,
             admin,
             seed_generator: Arc::new(StellarSeedGenerator),
+            horizon_updater: Arc::new(NoopHorizonKeyUpdater),
         }
     }
 
@@ -372,6 +453,12 @@ impl KeyRotationWorker {
         self.seed_generator = seed_generator;
         self
     }
+
+    pub fn with_horizon_updater(mut self, updater: Arc<dyn HorizonKeyUpdater>) -> Self {
+        self.horizon_updater = updater;
+        self
+    }
+=======
 
     pub async fn rotate_once(&self) -> Result<KeyRotationReport> {
         let mut report = KeyRotationReport::started(
@@ -424,12 +511,29 @@ impl KeyRotationWorker {
             None,
         );
 
+        // Gracefully un-peer before injecting the new seed so the node does not
+        // participate in consensus with a half-applied identity.
+        self.admin.unpeer().await?;
+        report.push(
+            RotationStage::Applied,
+            "node gracefully un-peered from consensus peer set",
+            None,
+        );
+
         self.admin.apply_candidate(&candidate).await?;
         report.push(
             RotationStage::Applied,
             "Stellar Core config reload requested for candidate seed",
             None,
         );
+
+        self.admin.rejoin().await?;
+        report.push(
+            RotationStage::Applied,
+            "node rejoined consensus network with candidate seed",
+            None,
+        );
+=======
 
         match self
             .validate_consensus_window(&preflight, &mut report)
@@ -447,6 +551,31 @@ impl KeyRotationWorker {
                     ),
                     None,
                 );
+
+                if self.config.update_horizon {
+                    match self
+                        .horizon_updater
+                        .update_validator_key(
+                            &self.namespace,
+                            &self.node_name,
+                            &candidate_material.public_key,
+                        )
+                        .await
+                    {
+                        Ok(()) => report.push(
+                            RotationStage::Promoted,
+                            "Horizon ingestion databases updated with rotated key",
+                            None,
+                        ),
+                        Err(error) => warn!(
+                            node = %self.node_name,
+                            namespace = %self.namespace,
+                            error = %error,
+                            "Failed to update Horizon ingestion databases after rotation"
+                        ),
+                    }
+                }
+=======
                 report.push(
                     RotationStage::Completed,
                     "validator key rotation completed without consensus outage",
@@ -464,7 +593,10 @@ impl KeyRotationWorker {
                 );
                 if self.config.rollback_on_failure {
                     self.backend.rollback(&previous, Some(&candidate)).await?;
+                    self.admin.unpeer().await?;
                     self.admin.rollback_to_previous(&previous).await?;
+                    self.admin.rejoin().await?;
+=======
                     report.rollback_performed = true;
                     report.push(
                         RotationStage::Rollback,
@@ -599,18 +731,44 @@ impl KeyRotationDaemon {
             None => Api::all(self.client.clone()),
         };
 
-        for node in nodes
+        let validators: Vec<StellarNode> = nodes
             .list(&ListParams::default())
             .await
             .map_err(Error::KubeError)?
             .items
-        {
-            if node.spec.node_type != NodeType::Validator {
+            .into_iter()
+            .filter(|node| node.spec.node_type == NodeType::Validator)
+            .collect();
+
+        let coordinator = StaggeredRotationCoordinator::new(self.config.clone());
+        let total_validators = validators.len();
+        let mut healthy_validators = total_validators;
+        let mut rotated_any = false;
+
+        for node in validators {
+            let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
+            let name = node.name_any();
+
+            if !coordinator.is_due(None, Utc::now()) {
+                debug!(
+                    node = %name,
+                    namespace = %namespace,
+                    "Skipping validator key rotation; rotation policy not yet due"
+                );
                 continue;
             }
 
-            let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
-            let name = node.name_any();
+            if !coordinator.can_rotate(healthy_validators, total_validators) {
+                warn!(
+                    node = %name,
+                    namespace = %namespace,
+                    healthy = healthy_validators,
+                    total = total_validators,
+                    "Skipping validator key rotation; quorum safety threshold would be breached"
+                );
+                continue;
+            }
+
             let Some(backend) = self.backend_for_node(&node).await? else {
                 debug!(
                     node = %name,
@@ -647,6 +805,7 @@ impl KeyRotationDaemon {
                         "Validator key rotation completed"
                     );
                     job.succeed();
+                    rotated_any = true;
                 }
                 Ok(report) => {
                     warn!(
@@ -657,6 +816,8 @@ impl KeyRotationDaemon {
                         "Validator key rotation did not promote candidate"
                     );
                     job.fail(format!("{:?}", report.outcome));
+                    // A failed rotation may leave the node unhealthy; account for it.
+                    healthy_validators = healthy_validators.saturating_sub(1);
                 }
                 Err(error) => {
                     error!(
@@ -666,12 +827,21 @@ impl KeyRotationDaemon {
                         "Validator key rotation failed"
                     );
                     job.fail(error.to_string());
+                    healthy_validators = healthy_validators.saturating_sub(1);
+                }
+            }
+
+            if rotated_any {
+                let delay = coordinator.stagger_delay();
+                if !delay.is_zero() {
+                    sleep(delay).await;
                 }
             }
         }
 
         Ok(())
     }
+=======
 
     async fn backend_for_node(
         &self,
@@ -713,10 +883,27 @@ impl KeyRotationDaemon {
                     .await;
                 return Ok(Some(Arc::new(backend)));
             }
+
+            // Fall back to resolving the seed through an ExternalSecret CR
+            // managed by the External Secrets Operator.
+            let resolver = EsoSeedResolver::new(self.client.clone());
+            let source = ExternalSecretSeedSource {
+                namespace: node.namespace().unwrap_or_else(|| "default".to_string()),
+                external_secret_name: external.secret_store_ref.name.clone(),
+                seed_field: external
+                    .remote_property
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_SEED_KEY.to_string()),
+                region: self.config.aws_region.clone(),
+            };
+            if let Some(backend) = resolver.backend_for(&source).await? {
+                return Ok(Some(backend));
+            }
         }
 
         Ok(None)
     }
+=======
 
     async fn admin_for_node(
         &self,
@@ -748,7 +935,58 @@ impl KeyRotationDaemon {
     }
 }
 
+/// Cluster-wide staggered rotation coordinator.
+///
+/// Ensures that at most one validator is being rotated at a time and that the
+/// remaining healthy validators always satisfy `min_healthy_validators` so
+/// quorum is never jeopardized during the restart sequence.
+pub struct StaggeredRotationCoordinator {
+    config: ValidatorKeyRotationConfig,
+}
+
+impl StaggeredRotationCoordinator {
+    pub fn new(config: ValidatorKeyRotationConfig) -> Self {
+        Self { config }
+    }
+
+    /// Returns the number of validators that must remain healthy while `total`
+    /// validators exist and one is being rotated.
+    pub fn required_healthy_during_rotation(&self) -> usize {
+        self.config.min_healthy_validators.max(1)
+    }
+
+    /// Decide whether a rotation may proceed given the current healthy count.
+    pub fn can_rotate(&self, healthy_validators: usize, total_validators: usize) -> bool {
+        if total_validators == 0 {
+            return false;
+        }
+        // The node being rotated is temporarily removed from the healthy set.
+        let remaining = healthy_validators.saturating_sub(1);
+        remaining >= self.required_healthy_during_rotation()
+    }
+
+    /// Whether the scheduled policy is due for a node last rotated at `last`.
+    pub fn is_due(&self, last_rotated: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        if self.config.rotation_period_days == 0 {
+            return false;
+        }
+        let Some(last) = last_rotated else {
+            return true;
+        };
+        let period = Duration::from_secs(self.config.rotation_period_days * SECONDS_PER_DAY);
+        now.signed_duration_since(last)
+            .to_std()
+            .map(|elapsed| elapsed >= period)
+            .unwrap_or(false)
+    }
+
+    pub fn stagger_delay(&self) -> Duration {
+        Duration::from_secs(self.config.stagger_delay_secs)
+    }
+}
+
 fn validation_sample_count(window_secs: u64, interval_secs: u64) -> u32 {
+=======
     if window_secs == 0 || interval_secs == 0 {
         return 1;
     }
@@ -1006,4 +1244,153 @@ mod tests {
         assert_eq!(validation_sample_count(30, 5), 6);
         assert_eq!(validation_sample_count(31, 5), 7);
     }
+
+    #[test]
+    fn staggered_coordinator_respects_quorum_threshold() {
+        let mut config = test_config();
+        config.min_healthy_validators = 3;
+        let coordinator = StaggeredRotationCoordinator::new(config);
+
+        // 5-node cluster, all healthy: rotating one leaves 4 >= 3, allowed.
+        assert!(coordinator.can_rotate(5, 5));
+        // 4 healthy of 5: rotating one leaves 3 >= 3, allowed.
+        assert!(coordinator.can_rotate(4, 5));
+        // 3 healthy of 5: rotating one leaves 2 < 3, blocked.
+        assert!(!coordinator.can_rotate(3, 5));
+        assert!(!coordinator.can_rotate(0, 0));
+    }
+
+    #[test]
+    fn rotation_policy_is_due_after_thirty_days() {
+        let coordinator = StaggeredRotationCoordinator::new(test_config());
+        let now = Utc::now();
+        assert!(coordinator.is_due(None, now));
+        assert!(!coordinator.is_due(Some(now - chrono::Duration::days(29)), now));
+        assert!(coordinator.is_due(Some(now - chrono::Duration::days(30)), now));
+        assert!(coordinator.is_due(Some(now - chrono::Duration::days(31)), now));
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingHorizonUpdater {
+        calls: Arc<Mutex<Vec<(String, String, String)>>>,
+    }
+
+    #[async_trait]
+    impl HorizonKeyUpdater for RecordingHorizonUpdater {
+        async fn update_validator_key(
+            &self,
+            namespace: &str,
+            node_name: &str,
+            new_public_key: &str,
+        ) -> Result<()> {
+            self.calls.lock().await.push((
+                namespace.to_string(),
+                node_name.to_string(),
+                new_public_key.to_string(),
+            ));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn horizon_updater_invoked_after_successful_rotation() {
+        let previous = ValidatorSeedMaterial::generate().unwrap();
+        let candidate = ValidatorSeedMaterial::generate().unwrap();
+        let candidate_public_key = candidate.public_key.clone();
+        let backend = Arc::new(MemorySecretManager::new(previous));
+        let admin = Arc::new(TestAdmin::new(vec![healthy(100), healthy(101)]));
+        let horizon = Arc::new(RecordingHorizonUpdater::default());
+        let worker = KeyRotationWorker::new(
+            "stellar",
+            "validator-a",
+            test_config(),
+            backend,
+            admin,
+        )
+        .with_seed_generator(Arc::new(FixedSeedGenerator {
+            material: candidate,
+        }))
+        .with_horizon_updater(horizon.clone());
+
+        let report = worker.rotate_once().await.unwrap();
+
+        assert_eq!(report.outcome, RotationOutcome::Completed);
+        let calls = horizon.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "stellar");
+        assert_eq!(calls[0].1, "validator-a");
+        assert_eq!(calls[0].2, candidate_public_key);
+    }
+
+    /// Simulates a 5-node testnet rotating under a 30-day policy and asserts
+    /// that ledger advancement never halts across the staggered sequence.
+    #[tokio::test]
+    async fn five_node_testnet_rotates_without_halting_ledgers() {
+        let mut config = test_config();
+        config.min_healthy_validators = 3;
+        config.stagger_delay_secs = 0;
+        config.rotation_period_days = 30;
+        let coordinator = StaggeredRotationCoordinator::new(config.clone());
+
+        let node_count = 5usize;
+        let mut healthy = node_count;
+        let mut ledger = 1_000u64;
+        let mut rotated = 0usize;
+
+        for index in 0..node_count {
+            assert!(
+                coordinator.can_rotate(healthy, node_count),
+                "quorum safety breached before rotating node {index}"
+            );
+
+            let previous = ValidatorSeedMaterial::generate().unwrap();
+            let candidate = ValidatorSeedMaterial::generate().unwrap();
+            let backend = Arc::new(MemorySecretManager::new(previous));
+            // Preflight, then two advancing validation samples.
+            let admin = Arc::new(TestAdmin::new(vec![
+                healthy_snapshot(ledger),
+                healthy_snapshot(ledger + 1),
+                healthy_snapshot(ledger + 2),
+            ]));
+            let worker = KeyRotationWorker::new(
+                "stellar",
+                format!("validator-{index}"),
+                config.clone(),
+                backend,
+                admin,
+            )
+            .with_seed_generator(Arc::new(FixedSeedGenerator {
+                material: candidate,
+            }));
+
+            let report = worker.rotate_once().await.unwrap();
+            assert_eq!(report.outcome, RotationOutcome::Completed);
+            assert!(report
+                .events
+                .iter()
+                .filter(|event| event.stage == RotationStage::Validation)
+                .all(|event| event.consensus_healthy == Some(true)));
+
+            // Ledger advanced during the rotation window.
+            ledger += 2;
+            rotated += 1;
+            // Node returns to the healthy set after a successful rotation.
+            healthy = node_count;
+        }
+
+        assert_eq!(rotated, node_count);
+        assert!(ledger > 1_000, "ledger advancement must not halt");
+    }
+
+    fn healthy_snapshot(sequence: u64) -> ConsensusSnapshot {
+        ConsensusSnapshot {
+            ledger_sequence: sequence,
+            ledger_hash: format!("hash-{sequence}"),
+            state: "Synced!".to_string(),
+            authenticated_peer_count: 3,
+            node_id: Some("GVALIDATOR".to_string()),
+            observed_at: Utc::now(),
+        }
+    }
 }
+=======
